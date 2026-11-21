@@ -539,7 +539,7 @@ function mathNames(text,notation=false,declared=new Map()) {
       // The exponential also occurs directly after its numeric coefficient.
       // Exclude identifiers, TeX commands and subscripts from this convention.
       .replace(/(?<![A-Za-z_\\])e(?=\s*\^)/gu,()=>declared.has('e')?'e':' ')
-      .replace(/\\mathbb\s*\{[NQRCZ]\}/gu,' ')
+      .replace(/\\mathbb(?:\s*\{[NQRCZ]\}|\s+[NQRCZ])/gu,' ')
       .replace(/\\(?:var)?([A-Za-z]+)(?![A-Za-z])/gu,(whole,name)=>{
         const greek=greekNames.get(name.toLowerCase());
         if (greek) return name[0]===name[0].toUpperCase()?greek.toUpperCase():greek;
