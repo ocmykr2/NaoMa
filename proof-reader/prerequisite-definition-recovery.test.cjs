@@ -18,7 +18,7 @@ test('a downstream definition can use its declared origin after a fresh full-car
   const title='Striped distance',definition='The striped distance counts striped edges on the unique path between two sites.';
   const application='The striped distance stays the same when the path is reversed.';
   const anchor='striped edges on the unique path';
-  for (const scenario of ['declared','text source','undeclared','changed definition']) {
+  for (const scenario of ['declared','text source','undeclared','changed definition','via lemma','broken chain','ambiguous title','changed via lemma']) {
     const cacheDir=await fs.mkdtemp(path.join(os.tmpdir(),'naoma-prior-definition-'));
     t.after(()=>fs.rm(cacheDir,{recursive:true,force:true}));
     const body={title:'Distances on colored trees',pdfBase64:Buffer.from('%PDF-1.7\nexample\n%%EOF').toString('base64'),
@@ -31,10 +31,29 @@ test('a downstream definition can use its declared origin after a fresh full-car
     if (scenario==='text source') delete body.pdfBase64;
     const origin={name:title,text:definition,intuition:'',sourceStep:1,sourceQuote:definition,dependsOn:[]};
     const later={...origin,sourceStep:2,sourceQuote:application+' \\(1=1\\)',
-      text:scenario==='changed definition'?definition.replace('counts striped','counts unstriped'):definition};
+      text:scenario.startsWith('changed')?definition.replace('counts striped','counts unstriped'):definition};
     const rows=[origin,later].map((card,i)=>({id:body.analysis.parts[i].id,question:'What is counted along the path?',
       orientation:{introduction:i?'Consider the path from the other endpoint.':'Assign a length to a path.',
         paragraphs:[i?application:definition],definitions:[card],notation:[],handoff:'',statement:null}}));
+    if (['via lemma','broken chain','ambiguous title','changed via lemma'].includes(scenario)) {
+      const alternate='The striped distance counts the distinct colors used along a path.';
+      const bridge=scenario==='ambiguous title'?alternate:'The same edges connect the two endpoints after reversal.';
+      body.units.splice(1,0,{page:2,title:'Connect the endpoints',text:bridge});
+      body.units[2].page=3;later.sourceStep=3;
+      const target=body.analysis.parts[1];target.sourceSteps=[3];target.localPrerequisiteIds=['connection'];
+      body.analysis.parts.splice(1,0,{id:'bridge',title:'Connect the endpoints',summary:bridge,sourceSteps:[2],techniqueIds:[],
+        definitionGroupIds:[],localPrerequisiteIds:scenario==='broken chain'?[]:['distance']});
+      body.analysis.localIntroductions.push({id:'connection',kind:'lemma',title:'Endpoint connection',meaning:bridge,originPartId:'bridge'});
+      const definitions=[];
+      if (scenario==='ambiguous title') {
+        body.analysis.localIntroductions.push({id:'different-distance',kind:'definition',title,meaning:alternate,originPartId:'bridge',
+          sourceAnchors:[{step:2,phrase:'distinct colors used along a path'}]});
+        target.localPrerequisiteIds.push('different-distance');
+        definitions.push({...origin,sourceStep:2,text:alternate,sourceQuote:alternate});
+      }
+      rows.splice(1,0,{id:'bridge',question:'How do the endpoints connect?',orientation:{introduction:bridge,
+        paragraphs:[bridge],definitions,notation:[],handoff:'',statement:null}});
+    }
     let originChecks=0,fallback=0;
     async function worker({directory,outputPath,prompt,imagePaths}) {
       let output;
@@ -55,7 +74,7 @@ test('a downstream definition can use its declared origin after a fresh full-car
         }
         case 'definition-recovery.json':{
           const file=JSON.parse(await fs.readFile(path.join(directory,'definition-recovery-input.json'),'utf8'));
-          if (scenario==='changed definition') {
+          if (scenario.startsWith('changed')) {
             assert.equal(file.targets[0].declaredOrigin.originPartId,'setup');
             assert.ok(imagePaths.some(p=>path.basename(p)==='page-1.png'));
           } else assert.equal(file.targets[0].declaredOrigin,undefined);
@@ -72,14 +91,15 @@ test('a downstream definition can use its declared origin after a fresh full-car
       await fs.writeFile(outputPath,JSON.stringify(output));
     }
     const job=await prepare(cacheDir,body,worker);
-    if (scenario==='declared' || scenario==='text source') {
+    if (['declared','text source','via lemma'].includes(scenario)) {
       assert.equal(job.status,'ready',job.message);
       assert.equal(originChecks,1);assert.equal(fallback,0);
-      assert.deepEqual(job.parts[1].sourceSteps,[2]);assert.deepEqual(job.parts[1].orientation.paragraphs,[application]);
-      assert.equal(job.parts[1].orientation.definitions[0].text,definition);
+      const target=job.parts.at(-1);
+      assert.deepEqual(target.sourceSteps,[later.sourceStep]);assert.deepEqual(target.orientation.paragraphs,[application]);
+      assert.equal(target.orientation.definitions[0].text,definition);
     } else {
       assert.equal(job.status,'error',scenario);assert.equal(job.parts,undefined);assert.ok(fallback>0);
-      assert.equal(originChecks,scenario==='undeclared'?0:1);
+      assert.equal(originChecks,scenario.startsWith('changed')?1:0);
     }
   }
 });

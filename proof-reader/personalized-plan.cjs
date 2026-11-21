@@ -696,15 +696,27 @@ function briefForPrompt(brief) {
   return {...compact,definitionGroups:compact.definitionGroups.map(({terms,...g})=>({...g,termCount:terms.length})),
     localIntroductions:compact.localIntroductions.map(({id,originPartId})=>({id,originPartId}))};
 }
-async function completeSections({rows,sourceChecks,checkpoint,brief,paperParts,completedParts,mode,units,definitionSteps,visualPages,pdf,pageImage,worker,directory,schemaPath,outputPath,prompt,imagePaths,onStage,edition,diagnose}) {
+async function completeSections({rows,sourceChecks,checkpoint,brief,analysis,completedParts,mode,units,definitionSteps,visualPages,pdf,pageImage,worker,directory,schemaPath,outputPath,prompt,imagePaths,onStage,edition,diagnose}) {
   const parts=[],statements=new Map(),all=rows.map((_,i)=>i);
+  const paperParts=analysis.parts,byPart=new Map(paperParts.map(part=>[part.id,part]));
+  const byIntro=new Map(analysis.localIntroductions.map(intro=>[intro.id,intro]));
   function declaredOrigin(i,name) {
     if (!name) return;
     const target=brief.parts[i],title=name.trim().toLowerCase();
-    const matches=brief.localIntroductions.filter(intro=>intro.kind==='definition' && target.localPrerequisiteIds.includes(intro.id) &&
+    const matches=analysis.localIntroductions.filter(intro=>intro.kind==='definition' &&
       intro.title.trim().toLowerCase()===title);
     if (matches.length!==1) return;
-    const intro=matches[0],origin=paperParts.find(part=>part.id===intro.originPartId);
+    const intro=matches[0],pending=[...target.localPrerequisiteIds],seen=new Set();
+    // The validated catalog permits only explicit edges to strictly earlier parts.
+    while (pending.length) {
+      const id=pending.pop();
+      if (seen.has(id)) continue;
+      seen.add(id);
+      if (id===intro.id) break;
+      pending.push(...byPart.get(byIntro.get(id).originPartId).localPrerequisiteIds);
+    }
+    if (!seen.has(intro.id)) return;
+    const origin=byPart.get(intro.originPartId);
     const earlier=completedParts.find(part=>part.id===origin.id) || parts.find(part=>part?.id===origin.id);
     const earlierCard=earlier?.orientation.definitions.find(card=>card.name.trim().toLowerCase()===title);
     return {id:intro.id,originPartId:origin.id,sourceSteps:origin.sourceSteps,sourceAnchors:intro.sourceAnchors || [],
@@ -1788,7 +1800,7 @@ async function generate(input,worker,renderSourcePage,skill,history,report,check
             }
           }
           try {
-            parts=await completeSections({rows:output.parts,sourceChecks,checkpoint,brief,paperParts:analysis.parts,completedParts:result,mode,units,definitionSteps,visualPages,pdf:pdf && renderSourcePage,edition:notationEdition,
+            parts=await completeSections({rows:output.parts,sourceChecks,checkpoint,brief,analysis,completedParts:result,mode,units,definitionSteps,visualPages,pdf:pdf && renderSourcePage,edition:notationEdition,
               pageImage,worker,directory:dir,schemaPath,outputPath,prompt,imagePaths,onStage,diagnose});
           } catch(error) {
             if (error.exhaustedDefinitionSource) {
