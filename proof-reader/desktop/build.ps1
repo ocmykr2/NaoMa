@@ -70,8 +70,9 @@ try {
         }
         foreach ($pngBytes in $images) { $writer.Write([byte[]]$pngBytes) }
     } finally { $writer.Dispose() }
-    & $compiler /nologo /platform:x64 /target:winexe /optimize+ '/out:Proof Reader.exe' /win32manifest:app.manifest "/win32icon:$iconFile" `
+    & $compiler /nologo /platform:x64 /target:winexe /optimize+ '/out:Naoma.exe' /win32manifest:app.manifest "/win32icon:$iconFile" `
         /reference:System.dll,System.Core.dll,System.Drawing.dll,System.Windows.Forms.dll,System.Net.Http.dll `
         /reference:Microsoft.Web.WebView2.Core.dll,Microsoft.Web.WebView2.WinForms.dll ProofReader.cs
     if ($LASTEXITCODE) { throw 'The desktop build failed.' }
+    Copy-Item -LiteralPath 'Naoma.exe' -Destination 'Proof Reader.exe' -Force
 } finally { Pop-Location; [IO.File]::Delete($iconFile) }

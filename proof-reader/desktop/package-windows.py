@@ -22,7 +22,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("lean_archive", type=Path, help="Official lean-4.36.0-windows.zip")
     parser.add_argument("output", type=Path)
-    parser.add_argument("--revision", default="HEAD", help="Git revision of NaoMa to package")
+    parser.add_argument("--revision", default="HEAD", help="Git revision of Naoma to package")
     args = parser.parse_args()
     output = args.output.resolve()
     if output == args.lean_archive.resolve():
@@ -33,13 +33,13 @@ def main():
     root = Path(__file__).resolve().parents[2]
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=output.parent) as staging:
-        package = Path(staging) / "NaoMa.zip"
+        package = Path(staging) / "Naoma.zip"
         subprocess.run(
-            ["git", "archive", "--format=zip", "--prefix=NaoMa/", "-o", str(package), args.revision],
+            ["git", "archive", "--format=zip", "--prefix=Naoma/", "-o", str(package), args.revision],
             cwd=root, check=True,
         )
         prefix = f"lean-{LEAN_VERSION}-windows/"
-        runtime = f"NaoMa/proof-reader/lean/{LEAN_VERSION}/"
+        runtime = f"Naoma/proof-reader/lean/{LEAN_VERSION}/"
         with zipfile.ZipFile(args.lean_archive) as source, zipfile.ZipFile(
             package, "a", compression=zipfile.ZIP_DEFLATED, compresslevel=6
         ) as dest:

@@ -15,11 +15,13 @@ using Microsoft.Win32;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
 
-[assembly: System.Reflection.AssemblyTitle("Proof Reader")]
-[assembly: System.Reflection.AssemblyProduct("Proof Reader")]
+[assembly: System.Reflection.AssemblyTitle(Program.ProductName)]
+[assembly: System.Reflection.AssemblyProduct(Program.ProductName)]
 
 internal static class Program
 {
+    internal const string ProductName = "Naoma";
+
     [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr window);
     [DllImport("user32.dll")] private static extern bool IsIconic(IntPtr window);
     [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr window, int command);
@@ -36,7 +38,7 @@ internal static class Program
         int port;
         if (!Int32.TryParse(Environment.GetEnvironmentVariable("PROOF_READER_PORT") ?? "8794", out port) || port < 1 || port > 65535)
         {
-            MessageBox.Show("Set PROOF_READER_PORT to a port between 1 and 65535.", "Proof Reader");
+            MessageBox.Show("Set PROOF_READER_PORT to a port between 1 and 65535.", ProductName);
             return;
         }
         bool first;
@@ -44,12 +46,23 @@ internal static class Program
         {
             if (!first)
             {
-                foreach (var process in Process.GetProcessesByName(Process.GetCurrentProcess().ProcessName))
+                var desktop = Path.GetDirectoryName(Application.ExecutablePath);
+                foreach (var process in Process.GetProcessesByName(ProductName).Concat(Process.GetProcessesByName("Proof Reader")))
                 using (process)
                 {
-                    if (process.MainWindowHandle == IntPtr.Zero || process.MainWindowTitle != "Proof Reader") continue;
-                    if (IsIconic(process.MainWindowHandle)) ShowWindow(process.MainWindowHandle, 9);
-                    SetForegroundWindow(process.MainWindowHandle);
+                    try
+                    {
+                        var window = process.MainWindowHandle;
+                        if (window == IntPtr.Zero) continue;
+                        // An earlier release may still own this installation's mutex.
+                        var title = process.MainWindowTitle;
+                        if (title != ProductName && title != "Proof Reader") continue;
+                        if (!String.Equals(desktop, Path.GetDirectoryName(process.MainModule.FileName), StringComparison.OrdinalIgnoreCase)) continue;
+                        if (IsIconic(window)) ShowWindow(window, 9);
+                        SetForegroundWindow(window);
+                    }
+                    catch (InvalidOperationException) { } // A matching process may have already closed.
+                    catch (System.ComponentModel.Win32Exception) { } // Windows can deny access to a different user's process.
                 }
                 return;
             }
@@ -131,7 +144,7 @@ internal sealed class ReaderService : IDisposable
         bool running = await IsRunning();
         if (disposed || running) return;
         var node = FindExecutable("node.exe");
-        if (node == null) throw new InvalidOperationException("Install Node.js and reopen Proof Reader.");
+        if (node == null) throw new InvalidOperationException("Install Node.js and reopen " + Program.ProductName + ".");
         var server = Path.Combine(root, "server.cjs");
         if (!File.Exists(server)) throw new FileNotFoundException("Keep the desktop folder alongside the reader's server.cjs.");
         var start = new ProcessStartInfo(node, "\"" + server + "\"") { WorkingDirectory = root, UseShellExecute = false, CreateNoWindow = true };
@@ -187,7 +200,7 @@ internal sealed class ReaderWindow : Form
 {
     private readonly ReaderService service;
     private readonly WebView2 view = new WebView2 { Dock = DockStyle.Fill };
-    private readonly Label status = new Label { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, Text = "Opening Proof Reader…" };
+    private readonly Label status = new Label { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, Text = "Opening " + Program.ProductName + "…" };
     private readonly System.Windows.Forms.Timer monitor = new System.Windows.Forms.Timer { Interval = 2000 };
     private bool closing, pageAvailable;
     private CoreWebView2Environment environment;
@@ -195,7 +208,7 @@ internal sealed class ReaderWindow : Form
     internal ReaderWindow(ReaderService service)
     {
         this.service = service;
-        Text = "Proof Reader";
+        Text = Program.ProductName;
         Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(580, 450);
@@ -257,7 +270,7 @@ internal sealed class ReaderWindow : Form
                 if (closing || IsDisposed) return;
                 pageAvailable = args.IsSuccess;
                 status.Visible = !args.IsSuccess;
-                if (!args.IsSuccess) status.Text = "The reading service could not load. Close and reopen Proof Reader.";
+                if (!args.IsSuccess) status.Text = "The reading service could not load. Close and reopen " + Program.ProductName + ".";
             };
             await core.AddScriptToExecuteOnDocumentCreatedAsync("window.PROOF_READER_DESKTOP = true;");
             if (closing || IsDisposed) return;
@@ -267,7 +280,7 @@ internal sealed class ReaderWindow : Form
         catch (Exception error)
         {
             if (IsDisposed) return;
-            status.Text = error is WebView2RuntimeNotFoundException ? "Install the Microsoft Edge WebView2 Evergreen Runtime, then reopen Proof Reader." : error.Message;
+            status.Text = error is WebView2RuntimeNotFoundException ? "Install the Microsoft Edge WebView2 Evergreen Runtime, then reopen " + Program.ProductName + "." : error.Message;
         }
     }
 
@@ -305,7 +318,7 @@ internal sealed class ReaderWindow : Form
         if (!e.IsUserInitiated) return;
         if (!Local(e.Uri)) { External(e.Uri); return; }
         var deferral = e.GetDeferral();
-        var paper = new Form { Text = "Original paper · Proof Reader", Icon = Icon, Size = Size, StartPosition = FormStartPosition.CenterParent };
+        var paper = new Form { Text = "Original paper · " + Program.ProductName, Icon = Icon, Size = Size, StartPosition = FormStartPosition.CenterParent };
         try
         {
             var pdf = new WebView2 { Dock = DockStyle.Fill };

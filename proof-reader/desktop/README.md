@@ -1,6 +1,6 @@
-# Proof Reader for Windows
+# Naoma for Windows
 
-Double-click **Proof Reader.exe** to open the x64 Windows app. You can also use **start-reader.cmd** in the parent folder. Keep the desktop folder with the reader files when moving the app.
+Double-click **Naoma.exe** to open the x64 Windows app. You can also use **start-reader.cmd** in the parent folder. Keep the desktop folder with the reader files when moving the app.
 
 The window uses the installed Microsoft Edge WebView2 Evergreen Runtime. Reading runs through a local Node.js service on `127.0.0.1:8794`. An existing service is reused only when its installation identity matches this copy. The app closes a service it started when the main window closes. Set `PROOF_READER_PORT` before launch to use a different fixed local port.
 
@@ -34,7 +34,7 @@ The local service keeps the latest 96 events per job across restarts. An interru
 The Windows x64 release includes its Lean runtime. To build the download from a committed revision, use Python 3.11 or later and the official `lean-4.36.0-windows.zip`. The packaging script verifies the archive and includes the compiler, libraries and license notices.
 
 ```powershell
-python proof-reader/desktop/package-windows.py lean-4.36.0-windows.zip dist/NaoMa-Windows-x64.zip
+python proof-reader/desktop/package-windows.py lean-4.36.0-windows.zip dist/Naoma-Windows-x64.zip
 ```
 
 Run `./build.ps1` in PowerShell on x64 Windows with the .NET Framework 4.x compiler. The script verifies the SHA-256 digest of the pinned Microsoft WebView2 SDK package, extracts the three runtime libraries and their notices, and builds the window and its icon. For an offline rebuild, supply the downloaded package path with `-SdkPackage`.

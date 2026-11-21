@@ -1332,7 +1332,7 @@
     confirm.disabled=cancel.disabled=true;
     confirm.textContent="Removing…";
     try {
-      const restartMessage="Close and reopen Proof Reader to load paper removal, then try again.";
+      const restartMessage="Close and reopen Naoma to load paper removal, then try again.";
       if (!window.PAPER_REMOVAL) throw Error(restartMessage);
       const hash=target.id,session=currentSession(),analysis=studyAnalysis();
       const [evidence,legacyPlans]=await Promise.all([
@@ -1504,7 +1504,7 @@
     try { await window.PAPER_REMOVAL?.resumePending?.(); }
     catch {
       await selectChoice(firstLibraryChoice());
-      importStatus("A previous paper removal could not finish. Reopen Proof Reader to retry, or import another paper.");
+      importStatus("A previous paper removal could not finish. Reopen Naoma to retry, or import another paper.");
       el("uploadDialog").showModal();
       return;
     }
