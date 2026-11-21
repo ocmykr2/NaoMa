@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const os = require('node:os');
-const {compileFormalization,verifyFormalization,findLean,createLeanResolver} = require('./lean-verifier.cjs');
+const {compileFormalization,verifyFormalization,findLean,createLeanResolver,healthyRuntime} = require('./lean-verifier.cjs');
 
 const counting = {
   variables:[{name:'machines',type:'Nat'},{name:'overlap',type:'Nat'}],
@@ -87,6 +87,55 @@ test('sequential parts reuse a successful probe until files change, an actual ch
   fingerprint='repaired-library';await resolver();assert.equal(probes,2);
   resolver.invalidate('bundle');await resolver();assert.equal(probes,3);
   now+=5*60000;await resolver();assert.equal(probes,4);
+});
+
+test('cold version and theorem probes retry the same Windows runtime, keeping timeouts distinct from a damaged install',async()=>{
+  let nativeInstalls=0;
+  const nativeTimeout=createLeanResolver({supported:true,discover:async()=>[],install:async()=>{
+    nativeInstalls++;throw Object.assign(new Error('The installer startup check timed out.'),{code:'LEAN_PROBE_TIMEOUT'});
+  }});
+  assert.equal((await nativeTimeout()).status,'timeout');assert.equal((await nativeTimeout()).status,'timeout');
+  assert.equal(nativeInstalls,1);
+  for (const scenario of ['slow version','slow theorem','version stays slow','theorem stays slow','wrong version','missing library']) {
+    let installs=0;
+    const calls=[],candidate={exe:'bundled',pinned:true,fingerprint:'unchanged'};
+    const run=async(exe,args,input,_cwd,limit)=>{
+      assert.equal(exe,candidate.exe);
+      const stage=args[0]==='--version'?'version':'theorem';
+      calls.push({stage,limit});
+      if (scenario===stage+' stays slow' || (scenario==='slow '+stage && calls.filter(c=>c.stage===stage).length===1)) {
+        return {code:null,failure:'timeout',stdout:'',stderr:''};
+      }
+      if (stage==='version') {
+        const version=scenario==='wrong version'?'4.35.0':'4.36.0';
+        return {code:0,failure:'',stdout:'Lean (version '+version+', x86_64-w64-windows-gnu, Release)',stderr:''};
+      }
+      if (scenario==='missing library') return {code:1,failure:'',stdout:'',stderr:'missing Init.olean'};
+      const line=input.split('\n').findIndex(s=>s.startsWith('#print axioms '))+1;
+      const message={severity:'information',fileName:'<stdin>',pos:{line},data:"'Part0.readingPart' does not depend on any axioms"};
+      return {code:0,failure:'',stdout:JSON.stringify(message),stderr:''};
+    };
+    const resolver=createLeanResolver({supported:true,discover:async()=>[candidate],
+      healthy:(item,limits)=>healthyRuntime(item,limits,run),
+      install:async()=>{installs++;throw Object.assign(new Error('Repair unavailable.'),{code:'LEAN_INSTALL_UNAVAILABLE'});}});
+    const [result,peer]=await Promise.all([resolver(),resolver()]);
+    assert.deepEqual(peer,result);
+    if (scenario==='wrong version' || scenario==='missing library') {
+      assert.equal(installs,1);assert.equal(result.detail,'Repair unavailable.');
+      assert.equal(calls.filter(c=>c.stage==='version').length,1);
+      assert.equal(calls.filter(c=>c.stage==='theorem').length,scenario==='wrong version'?0:1);
+      continue;
+    }
+    assert.equal(installs,0,scenario);
+    if (scenario.includes('stays slow')) {
+      assert.equal(result.status,'timeout');
+      assert.match(result.detail,scenario.startsWith('version')?/version/:/time limit/);
+    } else assert.deepEqual(result,{exe:'bundled'});
+    const stage=scenario.includes('version')?'version':'theorem',deadlines=calls.filter(c=>c.stage===stage).map(c=>c.limit);
+    assert.equal(deadlines.length,2);assert.ok(deadlines[1]>deadlines[0]);assert.ok(deadlines[1]<=150000);
+    const before=calls.length;
+    assert.deepEqual(await resolver(),result);assert.equal(calls.length,before);assert.equal(installs,0);
+  }
 });
 
 test('installed Lean checks the intended deduction and independently rejects a false sibling',async t=>{

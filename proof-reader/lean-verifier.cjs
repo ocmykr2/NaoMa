@@ -168,6 +168,9 @@ async function installWindowsRuntime() {
   } catch (error) {
     // Keep stable diagnostics without copying local paths or child-process commands into a receipt.
     const log=error.stderr || '';
+    if (log.includes('compiler health check timed out')) {
+      throw Object.assign(new Error('The installed Lean compiler timed out during its startup check.'),{code:'LEAN_PROBE_TIMEOUT'});
+    }
     let detail='The pinned Lean runtime could not be prepared. Check the download connection, available disk space or offline archive.';
     if (error.killed) detail='The pinned Lean installation exceeded its time limit.';
     else if (log.includes('published SHA-256')) detail='The Lean release archive failed the pinned SHA-256 check.';
@@ -178,60 +181,80 @@ async function installWindowsRuntime() {
   }
   return path.join(root,bundledVersion,'bin','lean.exe');
 }
-async function healthyRuntime({exe,pinned}) {
+async function healthyRuntime({exe,pinned},{timeoutMs,versionTimeoutMs},run=runLean) {
   // A damaged installation may print its version but lack the imported library.
   const formal={variables:[{name:'n',type:'Nat'}],hypotheses:[],conclusion:'n+1>n',tactic:'omega'};
-  const [result]=await checkBatch(exe,[{base:{source:compileFormalization(formal)},formal}],45000);
-  return result.status==='verified' && (!pinned || result.version.startsWith('Lean (version '+bundledVersion+','));
+  const [result]=await checkBatch(exe,[{base:{source:compileFormalization(formal)},formal}],timeoutMs,{versionTimeoutMs,pinned,run});
+  if (result.status==='timeout') throw Object.assign(new Error(result.detail),{code:'LEAN_PROBE_TIMEOUT'});
+  return result.status==='verified';
 }
 function createLeanResolver({discover=installedCandidates,healthy=healthyRuntime,install=installWindowsRuntime,
   supported=process.platform==='win32' && process.arch==='x64',now=Date.now}={}) {
   const pending=new Map();
   let retryAfter=0;
-  let failureDetail='';
-  let lastHealthy;
+  let installFailure;
+  let lastProbe;
   async function usable(candidate) {
-    if (candidate.fingerprint && lastHealthy?.exe===candidate.exe && lastHealthy.pinned===candidate.pinned &&
-        lastHealthy.fingerprint===candidate.fingerprint && now()<lastHealthy.expires) return true;
-    if (!(await healthy(candidate))) {
-      if (lastHealthy?.exe===candidate.exe) lastHealthy=undefined;
-      return false;
+    if (candidate.fingerprint && lastProbe?.exe===candidate.exe && lastProbe.pinned===candidate.pinned &&
+        lastProbe.fingerprint===candidate.fingerprint && now()<lastProbe.expires) return lastProbe.result;
+    // A freshly extracted Windows library can take over a minute to open on its first check.
+    const attempts=supported?[{versionTimeoutMs:20000,timeoutMs:90000},{versionTimeoutMs:45000,timeoutMs:150000}]:
+      [{versionTimeoutMs:10000,timeoutMs:45000}];
+    let result;
+    for (const limits of attempts) {
+      try {
+        if (!(await healthy(candidate,limits))) {
+          if (lastProbe?.exe===candidate.exe) lastProbe=undefined;
+          return null;
+        }
+        result={exe:candidate.exe};
+        break;
+      } catch (error) {
+        if (error.code!=='LEAN_PROBE_TIMEOUT') throw error;
+        result={status:'timeout',detail:error.message};
+      }
     }
-    if (candidate.fingerprint) lastHealthy={...candidate,expires:now()+5*60000};
-    return true;
+    if (candidate.fingerprint) lastProbe={...candidate,result,expires:now()+(result.exe?5*60000:60000)};
+    return result;
   }
   async function resolve(override,provision) {
+    let timedOut;
     for await (const candidate of await discover(override)) {
-      if (await usable(candidate)) return {exe:candidate.exe};
+      const result=await usable(candidate);
+      if (result?.exe) return result;
+      if (result?.status==='timeout') timedOut=result;
     }
+    if (timedOut) return timedOut;
     if (override) return {detail:'The configured Lean executable is missing or cannot check a local theorem.'};
     if (!provision || !supported) return {detail:'No working Lean 4 runtime is available for this platform.'};
     if (now()>=retryAfter) {
       let exe;
+      installFailure={detail:'The installed Lean release did not pass the local theorem check.'};
       try {
         exe=await install();
       } catch (error) {
-        if (error.code!=='LEAN_INSTALL_UNAVAILABLE') throw error;
-        failureDetail=error.message;
+        if (error.code==='LEAN_PROBE_TIMEOUT') installFailure={status:'timeout',detail:error.message};
+        else if (error.code==='LEAN_INSTALL_UNAVAILABLE') installFailure={detail:error.message};
+        else throw error;
       }
       if (exe) {
         let installed;
         for await (const candidate of await discover(exe)) {
           if (candidate.exe===exe) {installed=candidate;break;}
         }
-        if (await usable({...installed,exe,pinned:true})) {retryAfter=0;return {exe};}
-        failureDetail='The installed Lean release did not pass the local theorem check.';
+        const result=await usable({...installed,exe,pinned:true});
+        if (result) {retryAfter=0;return result;}
       }
       retryAfter=now()+60000;
     }
-    return {detail:failureDetail};
+    return installFailure;
   }
   const resolver=(override,provision=true)=>{
     const key=JSON.stringify([override || null,provision]);
     if (!pending.has(key)) pending.set(key,resolve(override,provision).finally(()=>pending.delete(key)));
     return pending.get(key);
   };
-  resolver.invalidate=exe=>{if (lastHealthy?.exe===exe) lastHealthy=undefined;};
+  resolver.invalidate=exe=>{if (lastProbe?.exe===exe) lastProbe=undefined;};
   return resolver;
 }
 const resolveLean=createLeanResolver();
@@ -274,17 +297,19 @@ async function withSlot(task) {
   }
 }
 const verifiedAxioms=new Set(['propext','Classical.choice','Quot.sound']);
-async function checkBatch(exe,rows,timeoutMs) {
+async function checkBatch(exe,rows,timeoutMs,{versionTimeoutMs=10000,pinned=false,run=runLean}={}) {
   const failed=(status,detail)=>rows.map(row=>({...row.base,status,detail}));
   return withSlot(async()=>{
     let cwd;
     try {
       cwd=await fs.mkdtemp(path.join(os.tmpdir(),'proof-reader-lean-check-'));
-      const ver=await runLean(exe,['--version'],'',cwd,10000);
+      const ver=await run(exe,['--version'],'',cwd,versionTimeoutMs);
+      if (ver.failure==='timeout') return failed('timeout','The installed Lean compiler timed out while reporting its version.');
       if (ver.failure || ver.code!==0 || !/Lean \(version 4\./.test(ver.stdout)) {
         return failed('unavailable','The installed checker did not report a working Lean 4 runtime.');
       }
       const version=ver.stdout.trim().split(/\r?\n/)[0].slice(0,220);
+      if (pinned && !version.startsWith('Lean (version '+bundledVersion+',')) return failed('unavailable','The installed release does not match the pinned Lean version.');
       let input='',nextLine=1;
       const ranges=rows.map(({base},i)=>{
         base.version=version;
@@ -294,7 +319,7 @@ async function checkBatch(exe,rows,timeoutMs) {
         nextLine+=lines.length;
         return {namespace,start,end:nextLine-1};
       });
-      const result=await runLean(exe,['--stdin','--json','-j1','-M1024'],input,cwd,timeoutMs);
+      const result=await run(exe,['--stdin','--json','-j1','-M1024'],input,cwd,timeoutMs);
       if (result.failure==='timeout') return failed('timeout','Lean reached the local time limit.');
       if (result.failure || result.stderr.trim()) return failed('error','The Lean process could not complete this check.');
       const messages=result.stdout.split(/\r?\n/).filter(s=>s.trim()).map(line=>JSON.parse(line));
@@ -329,7 +354,7 @@ async function verifyFormalization(formal,{executable,timeoutMs=90000}={}) {
   try { base.source=compileFormalization(formal); }
   catch (error) {return {...base,status:'unsupported',detail:error.message};}
   const runtime=await resolveLean(executable || process.env.PROOF_READER_LEAN);
-  if (!runtime.exe) return {...base,status:'unavailable',detail:runtime.detail};
+  if (!runtime.exe) return {...base,status:runtime.status || 'unavailable',detail:runtime.detail};
   const exe=runtime.exe;
   const deadline=Number.isFinite(timeoutMs)?Math.max(100,Math.min(120000,timeoutMs)):90000;
   const key=JSON.stringify([exe,deadline]);
@@ -348,4 +373,4 @@ async function verifyFormalization(formal,{executable,timeoutMs=90000}={}) {
   }
   return new Promise(resolve=>pending.get(key).push({base,formal,resolve}));
 }
-module.exports={formalSchema,formalGuidance,compileFormalization,verifyFormalization,findLean,createLeanResolver};
+module.exports={formalSchema,formalGuidance,compileFormalization,verifyFormalization,findLean,createLeanResolver,healthyRuntime};

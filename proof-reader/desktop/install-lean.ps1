@@ -85,7 +85,7 @@ function Move-Runtime([string]$From, [string]$To) {
     }
 }
 
-function Invoke-Probe([string]$Compiler, [string]$Arguments, [string]$SourceText) {
+function Invoke-Probe([string]$Compiler, [string]$Arguments, [string]$SourceText, [int]$TimeoutMs) {
     $start = [Diagnostics.ProcessStartInfo]::new()
     $start.FileName = $Compiler
     $start.Arguments = $Arguments
@@ -108,10 +108,13 @@ function Invoke-Probe([string]$Compiler, [string]$Arguments, [string]$SourceText
         $stderr = $process.StandardError.ReadToEndAsync()
         if ($SourceText) { $process.StandardInput.WriteLine($SourceText) }
         $process.StandardInput.Close()
-        if (!$process.WaitForExit(45000)) {
-            $process.Kill()
-            [void]$process.WaitForExit(3000)
-            return
+        if (!$process.WaitForExit($TimeoutMs)) {
+            try {
+                if (!$process.HasExited) { $process.Kill() }
+                [void]$process.WaitForExit(3000)
+            } finally {
+                throw [TimeoutException]::new('The Lean compiler health check timed out.')
+            }
         }
         if ($process.ExitCode -eq 0 -and $stdout.Wait(3000) -and $stderr.Wait(3000)) { return $stdout.Result.Trim() }
     } catch [ComponentModel.Win32Exception] { return }
@@ -119,17 +122,28 @@ function Invoke-Probe([string]$Compiler, [string]$Arguments, [string]$SourceText
     finally { $process.Dispose() }
 }
 
-function Test-Runtime([string]$Directory) {
+function Test-Runtime {
+    [CmdletBinding()]
+    param(
+        [string]$Directory,
+        [ValidateRange(1, 300000)][int]$FirstSampleTimeoutMs = 90000,
+        [ValidateRange(1, 300000)][int]$RetrySampleTimeoutMs = 150000
+    )
     $compiler = Join-Path $Directory 'bin\lean.exe'
     if (![IO.File]::Exists($compiler)) { return $false }
-    $reported = Invoke-Probe $compiler '--version' ''
+    $reported = Invoke-Probe $compiler '--version' '' 45000
     if ($reported -notmatch ('^Lean \(version ' + [regex]::Escape($version) + ', x86_64-w64-windows-gnu[,)]')) { return $false }
     $sample = @(
         'import Init'
         'theorem readingPart (n : Nat) : n + 1 > n := by omega'
         '#print axioms readingPart'
     ) -join [Environment]::NewLine
-    $receipt = Invoke-Probe $compiler '--stdin -j1 -M1024' $sample
+    try { $receipt = Invoke-Probe $compiler '--stdin -j1 -M1024' $sample $FirstSampleTimeoutMs }
+    catch [TimeoutException] {
+        # A cold library can take longer to open on first access. Require the
+        # same receipt on retry and preserve the installation if it times out.
+        $receipt = Invoke-Probe $compiler '--stdin -j1 -M1024' $sample $RetrySampleTimeoutMs
+    }
     return ($receipt -ceq "'readingPart' depends on axioms: [propext, Quot.sound]")
 }
 
