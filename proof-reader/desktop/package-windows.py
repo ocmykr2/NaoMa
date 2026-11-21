@@ -41,7 +41,7 @@ def main():
         prefix = f"lean-{LEAN_VERSION}-windows/"
         runtime = f"NaoMa/proof-reader/lean/{LEAN_VERSION}/"
         with zipfile.ZipFile(args.lean_archive) as source, zipfile.ZipFile(
-            package, "a", compression=zipfile.ZIP_DEFLATED, compresslevel=1
+            package, "a", compression=zipfile.ZIP_DEFLATED, compresslevel=6
         ) as dest:
             required = {"bin/lean.exe", "LICENSE", "LICENSES"}
             for item in source.infolist():

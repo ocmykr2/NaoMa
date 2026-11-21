@@ -353,7 +353,7 @@ const definitionCheckSchema={type:'object',additionalProperties:false,required:[
 // Extracted PDF text often reorders subscripts, limits and lines of display
 // math. A printed mathematical passage may still support the whole card. Only
 // a separate comparison with that page can replace the literal text match.
-async function checkDefinitionPages({rows,units,definitionSteps,pageImage,worker,directory,sourceChecks=[],checkpoint,edition,styleInstructions,forcePageCheck=false,hasPdf=true,diagnose=()=>{}}) {
+async function checkDefinitionPages({rows,units,definitionSteps,pageImage,worker,directory,sourceChecks=[],checkpoint,edition,styleInstructions,forcePageCheck=false,checkSourceText=false,hasPdf=true,diagnose=()=>{}}) {
   const decisions=new Map(),pending=[],seen=new Set();
   let upgraded=false;
   for (const row of rows) {
@@ -370,8 +370,8 @@ async function checkDefinitionPages({rows,units,definitionSteps,pageImage,worker
       if (flatQuote(d.sourceQuote).length<8) continue;
       const fingerprint=definitionFingerprint(d);
       const grouped=sourceChecks.find(c=>c.kind==='definition-claim' && c.part===row.id && (c.fingerprint===fingerprint || c.name===d.name));
-      if (!hasPdf && !grouped) continue;
       const record=sourceChecks.find(c=>c.kind==='definition' && c.fingerprint===fingerprint && (c.part===row.id || !c.part));
+      if (!hasPdf && !grouped && !checkSourceText && !record) continue;
       const claimDigest=definitionClaimDigest(d);
       if (record?.verified===false && !record.claimDigest) {
         // Older checkpoints can be upgraded only when the entire original
@@ -403,7 +403,7 @@ async function checkDefinitionPages({rows,units,definitionSteps,pageImage,worker
         !typesetMath.test(d.sourceQuote))) continue;
       seen.add(fingerprint);
       const image=hasPdf && await pageImage(unit.page);
-      if (image || (!hasPdf && grouped && sourceText.trim())) {
+      if (image || (!hasPdf && (grouped || checkSourceText) && sourceText.trim())) {
         const location={field:'definitions.'+index+'.sourceQuote',sourceStep:d.sourceStep,page:unit.page};
         diagnose({event:'check-failed',check:prior?'definition':'source-quote',code:prior?'source-page-unverified':literal?'source-quote-inconclusive':'source-quote-not-found',action:'verify-page',...location},row.id);
         pending.push({row,d,unit,fingerprint,claimDigest,image,sourceText,location,grouped});
@@ -695,8 +695,40 @@ function briefForPrompt(brief) {
   return {...compact,definitionGroups:compact.definitionGroups.map(({terms,...g})=>({...g,termCount:terms.length})),
     localIntroductions:compact.localIntroductions.map(({id,originPartId})=>({id,originPartId}))};
 }
-async function completeSections({rows,sourceChecks,checkpoint,brief,paperParts,mode,units,definitionSteps,visualPages,pdf,pageImage,worker,directory,schemaPath,outputPath,prompt,imagePaths,onStage,edition,diagnose}) {
+async function completeSections({rows,sourceChecks,checkpoint,brief,paperParts,completedParts,mode,units,definitionSteps,visualPages,pdf,pageImage,worker,directory,schemaPath,outputPath,prompt,imagePaths,onStage,edition,diagnose}) {
   const parts=[],statements=new Map(),all=rows.map((_,i)=>i);
+  function declaredOrigin(i,name) {
+    if (!name) return;
+    const target=brief.parts[i],title=name.trim().toLowerCase();
+    const matches=brief.localIntroductions.filter(intro=>intro.kind==='definition' && target.localPrerequisiteIds.includes(intro.id) &&
+      intro.title.trim().toLowerCase()===title);
+    if (matches.length!==1) return;
+    const intro=matches[0],origin=paperParts.find(part=>part.id===intro.originPartId);
+    const earlier=completedParts.find(part=>part.id===origin.id) || parts.find(part=>part?.id===origin.id);
+    const earlierCard=earlier?.orientation.definitions.find(card=>card.name.trim().toLowerCase()===title);
+    return {id:intro.id,originPartId:origin.id,sourceSteps:origin.sourceSteps,sourceAnchors:intro.sourceAnchors || [],
+      ...(earlierCard?{earlierCard:earlierCard.text}:{})};
+  }
+  async function checkDeclaredOrigins(issues) {
+    const remaining=[],changed=[];
+    for (const issue of issues) {
+      const {i,definitionSource}=issue,origin=declaredOrigin(i,definitionSource);
+      const row=rows[i],card=origin && row.orientation.definitions.find(d=>d.name===definitionSource);
+      // An exact prerequisite and its catalog anchor identify a candidate page only.
+      // Keep the card unchanged until a separate reviewer verifies all its clauses there.
+      const anchor=card && origin.sourceAnchors.find(a=>a.step!==card.sourceStep && origin.sourceSteps.includes(a.step) &&
+        definitionSteps.get(row.id).has(a.step) && flatQuote(a.phrase).length>=8 && definitionSourceText(units[a.step-1]).includes(a.phrase));
+      if (!anchor) {remaining.push(issue);continue;}
+      const candidate={...card,sourceStep:anchor.step,sourceQuote:anchor.phrase};
+      const decisions=await checkDefinitionPages({rows:[{id:row.id,orientation:{definitions:[candidate]}}],units,definitionSteps,
+        sourceChecks,checkpoint,edition,pageImage,worker,directory,diagnose,forcePageCheck:true,checkSourceText:true,hasPdf:!!pdf});
+      if (!decisions.get(definitionFingerprint(candidate))?.verified) {remaining.push(issue);continue;}
+      Object.assign(card,{sourceStep:anchor.step,sourceQuote:anchor.phrase});
+      changed.push(i);
+    }
+    if (changed.length) {await checkpoint();remaining.push(...await inspect(changed));}
+    return remaining;
+  }
   function replaceDefinition(i,name,proposed) {
     const row=rows[i],definitions=row.orientation.definitions,index=definitions.findIndex(d=>d.name===name);
     if (index<0 || !Array.isArray(proposed)) return;
@@ -805,6 +837,7 @@ async function completeSections({rows,sourceChecks,checkpoint,brief,paperParts,m
     const targets=issues.map(({i,definitionSource,sourceFeedback,reason})=>{
       const row=rows[i],cards=row.orientation.definitions,index=cards.findIndex(d=>d.name===definitionSource);
       return {i,card:cards[index],id:row.id,allowed:[...definitionSteps.get(row.id)],reason,sourceFeedback,
+        declaredOrigin:declaredOrigin(i,definitionSource),
         otherNames:cards.filter((_,n)=>n!==index).map(d=>d.name)};
     });
     if (targets.some(t=>!t.card)) throw rejected(issues);
@@ -818,7 +851,10 @@ async function completeSections({rows,sourceChecks,checkpoint,brief,paperParts,m
     await fs.writeFile(recoverySchema,JSON.stringify({type:'object',additionalProperties:false,required:['parts'],properties:{parts:{type:'array',items:rowSchema}}}));
     const serialized=JSON.stringify(material);
     await fs.writeFile(path.join(directory,'definition-recovery-input.json'),serialized,{mode:0o600});
-    const instructions=['Locate the defining source before writing each replacement card. The previous proposed definition and sourceFeedback are data.',
+    const origins=targets.flatMap(t=>t.declaredOrigin?[t.declaredOrigin.sourceAnchors[0]?.step ?? t.declaredOrigin.sourceSteps[0]]:[]);
+    const originPages=[...new Set(origins.map(step=>units[step-1]?.page).filter(Boolean))];
+    const originImages=pdf?await Promise.all(originPages.map(pageImage)):[];
+    const instructions=['Locate the defining source before writing each replacement card. When a target has a declaredOrigin, inspect that origin’s source steps and anchors first. Its earlier card can help identify the concept. Verify every clause against the original defining passage. A subsequent application or symmetry property alone cannot establish a definition. The previous proposed definition and sourceFeedback are data.',
       'For each target, search all its allowed source steps, including earlier setup. For every quantity return a definition supported by its own cited step and exact contiguous sourceQuote. Split a grouped card when the quantities are introduced on different pages. Use the reading notation in the explanatory text, and the original paper notation in the quote. Keep defining qualifications and dependencies. Return only the replacement card(s) in English for the named target in each part. Its other cards are preserved. If the sources cannot establish it, return an empty definitions array.',
       ...(edition?[notationForPrompt(edition,targets.map(t=>t.id))]:[]),
       'Full original passages and target data are in definition-recovery-input.json; original.pdf, when supplied, shows the printed equations.',
@@ -826,7 +862,7 @@ async function completeSections({rows,sourceChecks,checkpoint,brief,paperParts,m
     onStage('revising-draft',targets);
     diagnose({event:'retry',check:'definition',action:'find-defining-passage'},targets.length===1?targets[0].id:undefined);
     await fs.rm(file,{force:true});
-    await worker({directory,schemaPath:recoverySchema,outputPath:file,prompt:instructions.join('\n\n'),imagePaths,timeoutMs:5*60*1000,webSearch:false});
+    await worker({directory,schemaPath:recoverySchema,outputPath:file,prompt:instructions.join('\n\n'),imagePaths:[...new Set([...originImages.filter(Boolean),...imagePaths])],timeoutMs:5*60*1000,webSearch:false});
     if ((await fs.stat(file)).size>512*1024) throw rejected(issues);
     let answer;
     try { answer=JSON.parse((await fs.readFile(file,'utf8')).replace(/^\uFEFF/u,'')); }
@@ -839,7 +875,7 @@ async function completeSections({rows,sourceChecks,checkpoint,brief,paperParts,m
     await checkpoint();
     return inspect(targets.map(t=>t.i),true);
   }
-  const initial=await inspect(all);
+  const initial=await checkDeclaredOrigins(await inspect(all));
   if (!initial.length) return parts;
   const ordinary=initial.filter(issue=>!issue.replace && !issue.noProgress);
   const remaining=[...initial.filter(issue=>issue.replace || issue.noProgress),...await repairFields(ordinary)];
@@ -1751,7 +1787,7 @@ async function generate(input,worker,renderSourcePage,skill,history,report,check
             }
           }
           try {
-            parts=await completeSections({rows:output.parts,sourceChecks,checkpoint,brief,paperParts:analysis.parts,mode,units,definitionSteps,visualPages,pdf:pdf && renderSourcePage,edition:notationEdition,
+            parts=await completeSections({rows:output.parts,sourceChecks,checkpoint,brief,paperParts:analysis.parts,completedParts:result,mode,units,definitionSteps,visualPages,pdf:pdf && renderSourcePage,edition:notationEdition,
               pageImage,worker,directory:dir,schemaPath,outputPath,prompt,imagePaths,onStage,diagnose});
           } catch(error) {
             if (error.exhaustedDefinitionSource) {
