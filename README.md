@@ -7,7 +7,7 @@ Naoma is an interactive reader for mathematical papers. Import a paper, tell it 
 ## Run on Windows
 
 1. Install Node.js 24 and make sure `node --version` works in a new terminal. The desktop window also uses the Microsoft Edge WebView2 Evergreen Runtime. [Node.js downloads](https://nodejs.org/en/download) · [WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/)
-2. To prepare a paper or ask questions, install the Codex CLI and sign in with your own account. Check that `codex --version` works. [Codex CLI](https://developers.openai.com/codex/cli/)
+2. Install and sign in to the CLI for the AI provider you want to use. Naoma starts with Codex. For Claude, install the latest Claude Code (2.1.248 or newer), run `claude auth login` in a terminal, then choose **AI provider → Claude** in Naoma. Claude Code runs with `--model opus`, which tracks the latest Opus available through your configured provider. [Codex CLI](https://developers.openai.com/codex/cli/) · [Claude Code setup](https://code.claude.com/docs/en/setup) · [Claude model aliases](https://code.claude.com/docs/en/model-config)
 3. For PDF import, install Poppler and put its tools on your `PATH`. Naoma uses `pdftotext`, `pdfinfo`, and `pdftoppm`. You can also paste a proof or import a text file. [Poppler](https://poppler.freedesktop.org/)
 4. Allow about 2.6 GB for the extracted app and its Lean libraries. Extract the **entire** release ZIP into a short path such as `C:\Apps`, since Lean on Windows has a path-length limit. Open `proof-reader/start-reader.cmd` or double-click `proof-reader/desktop/Naoma.exe`. Keep the extracted folders together.
 
@@ -29,7 +29,7 @@ From the repository root, run the local service.
 node proof-reader/server.cjs
 ```
 
-Open <http://127.0.0.1:8794> in your browser. The server listens on the loopback interface. Codex handles paper preparation, literature research and answers using your signed-in account. When you opt in, the relevant paper text, page images, reference passages and questions can be sent to Codex. Your library and reading progress are stored on your device.
+Open <http://127.0.0.1:8794> in your browser. The server listens on the loopback interface. **AI provider** selects which CLI handles new paper research, reading plans, section explanations and follow-up questions. Your choice is saved on this computer. A job already in progress finishes with the provider it started with. When you opt in, relevant paper text, page images, reference passages and questions can be sent to that provider through your own account. Your library and reading progress are stored on your device.
 
 On **macOS**, the source includes a browser-mode launch path. The Windows desktop build has been tested end to end. A native Mac app and end-to-end verification on a Mac are pending.
 

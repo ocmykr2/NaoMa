@@ -38,6 +38,7 @@
         </select>
       </label>
       <button type="button" id="removePaper" class="ghost remove-paper" aria-haspopup="dialog" hidden>Remove paper…</button>
+      <button type="button" id="chooseProvider" class="ghost" aria-haspopup="dialog" aria-controls="providerDialog" title="Choose AI provider"><span>AI provider</span><span id="activeProvider"></span></button>
       <button type="button" class="control primary" id="openImport">Import paper</button>
     </div>
   </header>
@@ -254,7 +255,7 @@
           <form id="askForm" class="ask-form">
             <label class="visually-hidden" for="askText">Your question about this passage</label>
             <textarea id="askText" rows="2" maxlength="4000" placeholder="Ask about this passage or follow up on an answer…"></textarea>
-            <button type="submit" id="askSubmit" class="control primary">Ask Codex</button>
+            <button type="submit" id="askSubmit" class="control primary">Ask</button>
           </form>
           <p id="askStatus" role="status"></p>
           <details id="earlierQuestions" hidden>
@@ -285,10 +286,26 @@
     <button type="button" id="useText" class="ghost" hidden>Use pasted text instead</button>
     <label for="paperText" id="textLabel">Source text</label>
     <textarea id="paperText" rows="6" placeholder="Paste a theorem and its proof…"></textarea>
-    <label class="research-consent"><input type="checkbox" id="researchOnImport" checked> Use Codex to prepare the overview, techniques, and definitions</label>
+    <label class="research-consent"><input type="checkbox" id="researchOnImport" checked> <span id="researchConsentLabel">Use the selected AI provider to prepare the overview, techniques, and definitions</span></label>
+    <button type="button" id="changeImportProvider" aria-haspopup="dialog" aria-controls="providerDialog">Change AI provider</button>
     <small>If you skip preparation, you can read the original and prepare the guide later.</small>
     <p id="importMessage" role="status"></p>
     <button type="button" class="primary control" id="confirmImport">Open paper</button>
+  </dialog>
+  <dialog id="providerDialog" aria-labelledby="providerTitle">
+    <div class="dialog-head"><h2 id="providerTitle">AI provider</h2><button type="button" id="closeProvider" class="ghost close-dialog" aria-label="Close AI provider settings">Close</button></div>
+    <label for="providerChoice">Use for new preparations and questions</label>
+    <select id="providerChoice" aria-describedby="providerSetup" disabled>
+      <option value="" disabled>Choose a provider</option>
+      <option value="codex">OpenAI Codex</option>
+      <option value="claude">Claude · latest Opus</option>
+    </select>
+    <p id="providerSetup" hidden></p>
+    <p id="providerStatus" role="status" aria-live="polite"></p>
+    <div class="dialog-actions">
+      <button type="button" class="control" id="retryProvider" hidden>Reload setting</button>
+      <button type="button" class="control primary" id="saveProvider" disabled>Save</button>
+    </div>
   </dialog>
   <dialog id="removePaperDialog" aria-labelledby="removePaperHeading" aria-describedby="removePaperDescription">
     <h2 id="removePaperHeading">Remove this paper?</h2>

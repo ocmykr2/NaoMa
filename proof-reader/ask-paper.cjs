@@ -5,6 +5,7 @@ const path = require('node:path');
 const {normalize: normalizeOrientation,normalizeLegacy} = require('./part-orientation.js');
 const {normalizeNotationEdition,notationForPrompt} = require('./notation-adaptation.cjs');
 const {sourceIdentity}=require('./paper-cache.cjs');
+const {workerFailureCode,workerFailureMessage}=require('./worker-failure.cjs');
 
 const endpoint = '/api/paper-question';
 const pdfLimit = 12 * 1024 * 1024;
@@ -575,18 +576,21 @@ async function answerQuestion({ context, units, pdf }, worker, renderSourcePage)
   }
 }
 
-function failureMessage(error) {
+function failureMessage(error,provider='codex') {
+  const name=provider==='claude'?'Claude Code':'Codex';
   const message = error?.message || '';
-  if (/timed?\s*out|timeout/i.test(message)) return 'The answer timed out. Ask about a smaller passage and retry.';
-  if (/usage limit|quota/i.test(message)) return 'Your Codex account reached a usage limit. Retry when usage is available.';
+  const code=workerFailureCode(error);
+  if (code==='timeout' || /timed?\s*out|timeout/i.test(message)) return 'The answer timed out. Ask about a smaller passage and retry.';
+  if (code) return workerFailureMessage(code,provider);
+  if (/usage limit|quota/i.test(message)) return workerFailureMessage('quota',provider);
   if (message === 'answer formatting unavailable') return 'The answer could not be formatted for this reader. Retry the question.';
   if (message === 'source page unavailable') return 'The selected PDF page could not be rendered. Reopen the original PDF or paste its text and retry.';
-  if (/connection|network|reach its service/i.test(message)) return 'Codex could not reach its service. Check the connection and retry.';
-  if (/login|sign in|CLI installation|install the Codex CLI/i.test(message)) return 'Check that the Codex CLI is installed and signed in, then retry.';
-  return 'Codex could not finish this answer. Retry the question.';
+  if (/connection|network|reach its service/i.test(message)) return workerFailureMessage('network',provider);
+  if (/login|sign in|CLI installation|install the Codex CLI/i.test(message)) return workerFailureMessage('installation',provider);
+  return name+' could not finish this answer. Retry the question.';
 }
 
-function createQuestionHandler({ worker, readLocalJson, checkLocalRequest, renderSourcePage,paperCache }) {
+function createQuestionHandler({ worker, selectWorker=()=>({provider:'codex',worker}), readLocalJson, checkLocalRequest, renderSourcePage,paperCache }) {
   const jobs = new Map();
   const duplicates = new Map();
   let running = 0;
@@ -606,8 +610,9 @@ function createQuestionHandler({ worker, readLocalJson, checkLocalRequest, rende
     res.end(JSON.stringify({ key, status, ...result }));
   }
 
-  function submit(input,owner,res) {
-    const hash = createHash('sha256').update(promptVersion).update('\0').update(JSON.stringify(input.context)).update(JSON.stringify(input.units)).update(input.pdf || input.textIdentity || '').digest('hex');
+  function submit(input,owner,res,selection) {
+    const hash = createHash('sha256').update(promptVersion).update('\0').update(selection.provider).update('\0')
+      .update(JSON.stringify(input.context)).update(JSON.stringify(input.units)).update(input.pdf || input.textIdentity || '').digest('hex');
     const previous = jobs.get(duplicates.get(hash));
     if (previous && previous.status !== 'failed') { reply(res, previous); return; }
     if (running >= 2) throw requestError(429, 'Two reading questions are already running. Try again when one finishes.');
@@ -619,11 +624,11 @@ function createQuestionHandler({ worker, readLocalJson, checkLocalRequest, rende
     jobs.set(job.key, job);
     duplicates.set(hash, job.key);
     running++;
-    answerQuestion(input, worker, renderSourcePage).then(result => {
+    answerQuestion(input, selection.worker, renderSourcePage).then(result => {
       job.status = 'ready'; job.result = result;
     }, error => {
       job.status = 'failed';
-      job.result = { error: failureMessage(error) };
+      job.result = { error: failureMessage(error,selection.provider) };
     }).finally(() => { running--; job.until = Date.now() + resultLifetime; });
     reply(res, job);
   }
@@ -640,8 +645,9 @@ function createQuestionHandler({ worker, readLocalJson, checkLocalRequest, rende
     }
     if (req.method !== 'POST') { res.setHeader('Allow', 'POST'); throw requestError(405, 'Use POST to ask a question.'); }
     const input = prepareRequest(await readLocalJson(req, 24 * 1024 * 1024 + knowledgeInputLimit));
-    if (paperCache) await paperCache.withQuestion(input,owner=>submit(input,owner,res));
-    else submit(input,null,res);
+    const selection=await selectWorker(req);
+    if (paperCache) await paperCache.withQuestion(input,owner=>submit(input,owner,res,selection));
+    else submit(input,null,res,selection);
   };
 }
 

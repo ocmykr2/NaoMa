@@ -17,4 +17,19 @@ function workerFailureCode(error) {
   }
   return null;
 }
-module.exports={workerFailureCode};
+function workerFailureMessage(code,provider='codex') {
+  const name=provider==='claude'?'Claude Code':'Codex';
+  const messages={
+    timeout:'The paper agent timed out. Try a shorter selection or run it again.',
+    login:'Sign in to the local '+name+' CLI, then retry.',
+    quota:'The '+name+' account reached a usage limit. Retry when usage is available.',
+    network:'The local '+name+' worker could not reach its service. Check the connection and retry.',
+    refused:name+' declined this preparation request. Check the selected model and the requested material.',
+    configuration:'The '+name+' CLI rejected the request settings. Check the model and CLI configuration.',
+    installation:'Check the '+name+' CLI installation and sign in, then retry.',
+    exit:'The local '+name+' worker stopped before completing this step. Retry to continue from the last saved work.',
+    empty:'The local '+name+' worker returned no result for this step. Retry to continue from the last saved work.',
+  };
+  return messages[code];
+}
+module.exports={workerFailureCode,workerFailureMessage};

@@ -332,11 +332,11 @@
     const {study,research}=currentSession();
     const sourceFailure=state==="tailor-failed" && !study.unexpected && definitionSourceFailure(study);
     const messages = {
-      preparing:["Preparing your paper…",progressMessage || "Codex is reading the paper and preparing its overview, proof techniques, and definitions."],
+      preparing:["Preparing your paper…",progressMessage || "Preparing the overview, proof techniques, and definitions."],
       tailoring:["Preparing your reading plan…",progressMessage],
       "tailor-failed":[study.unexpected?"Couldn’t prepare your reading plan":sourceFailure?"Preparation paused at source review":"Preparation needs attention",sourceFailure || study.message || "Check the local reading service, then continue with your saved selections."],
       failed:[research.needsAction?"Paper preparation needs attention":"Couldn’t prepare this paper",research.message || "Check the local reading service, then continue from your saved document."],
-      "source-only":["Original document","Open the original or ask Codex to prepare a reading guide."]
+      "source-only":["Original document","Open the original or prepare a reading guide."]
     };
     const [title,message] = messages[state];
     el("changeFailedNotation").hidden=state!=="tailor-failed" || !["source","reference"].includes(currentSession().study.actionRequired) || !!sourceFailure || !currentSession().study.notationReference;
@@ -897,14 +897,14 @@
           group.append(follow);
         }
       } else if (turn.status === "failed" || turn.status === "error") {
-        group.append(make("p","turn-locator",turn.error || turn.message || "Codex could not answer this question."));
+        group.append(make("p","turn-locator",turn.error || turn.message || "The reading service could not answer this question."));
         group.append(button("Retry question","ghost",() => submitQuestion(turn.question, turn)));
       }
       log.append(group);
     }
     const busy = turns.some(t => t.status === "starting" || t.status === "running");
     el("askSubmit").disabled = busy;
-    el("askStatus").textContent = busy ? "Codex is reading the passage and your earlier questions…" : "";
+    el("askStatus").textContent = busy ? "Reading the passage and your earlier questions…" : "";
     const draft = drafts.get(draftKey()) || "";
     if (el("askText").value !== draft) el("askText").value = draft;
     renderEarlierQuestions();
@@ -1289,6 +1289,74 @@
     el("uploadDialog").showModal();
   }));
   el("openImport").addEventListener("click", () => el("uploadDialog").showModal());
+  function attachProviderPicker() {
+    const trigger = el("chooseProvider"), dialog = el("providerDialog"), choice = el("providerChoice");
+    const save = el("saveProvider"), retry = el("retryProvider"), status = el("providerStatus");
+    const names = {codex:"Codex", claude:"Claude"};
+    let saved = "", busy = false;
+    window.getConfirmedModelProvider = () => busy ? "" : saved;
+
+    function showSaved(provider) {
+      saved = provider;
+      el("activeProvider").textContent = names[provider] || "";
+      trigger.setAttribute("aria-label", provider ? "Choose AI provider. Current provider: " + names[provider] : "Choose AI provider");
+      el("researchConsentLabel").textContent = "Use " + (names[provider] || "the selected AI provider") + " to prepare the overview, techniques, and definitions";
+    }
+    function updateChoice() {
+      const help = el("providerSetup");
+      help.hidden = !choice.value;
+      help.textContent = choice.value === "claude" ? "Install Claude Code and sign in on this device. Naoma requests the latest Opus through Claude Code." :
+        choice.value === "codex" ? "Install Codex CLI and sign in on this device." : "";
+      save.disabled = busy || !choice.value || choice.value === saved;
+    }
+    async function syncProvider(method) {
+      if (busy) return;
+      const writing = method === "PUT", requested = choice.value;
+      busy = true;
+      el("closeProvider").disabled = writing;
+      choice.disabled = true;
+      save.disabled = true;
+      retry.hidden = true;
+      status.textContent = writing ? "Saving…" : "Loading setting…";
+      try {
+        const options = writing ? {method,headers:{"Content-Type":"application/json"},body:JSON.stringify({provider:requested})} : {cache:"no-store"};
+        if (typeof AbortSignal !== "undefined" && AbortSignal.timeout) options.signal = AbortSignal.timeout(5000);
+        const response = await fetch("/api/model-provider",options);
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || !Object.hasOwn(names,result?.provider) || (writing && result.provider !== requested)) {
+          throw Error(result?.error || "Naoma could not confirm the AI provider. Reload the setting to try again.");
+        }
+        showSaved(result.provider);
+        choice.value = saved;
+        choice.disabled = false;
+        status.textContent = "";
+        if (writing && dialog.open) dialog.close();
+      } catch (error) {
+        showSaved("");
+        choice.value = "";
+        choice.disabled = false;
+        status.textContent = error.message || "Naoma could not reach the reading service.";
+        retry.hidden = false;
+      } finally {
+        busy = false;
+        el("closeProvider").disabled = false;
+        updateChoice();
+      }
+    }
+    function open() {
+      dialog.showModal();
+      syncProvider("GET");
+    }
+    trigger.addEventListener("click", open);
+    el("changeImportProvider").addEventListener("click", open);
+    dialog.addEventListener("cancel", event => { if (el("closeProvider").disabled) event.preventDefault(); });
+    choice.addEventListener("change", updateChoice);
+    retry.addEventListener("click", () => syncProvider("GET"));
+    save.addEventListener("click", () => { if (!save.disabled) syncProvider("PUT"); });
+    if (location.protocol === "file:") { trigger.hidden = el("changeImportProvider").hidden = true; return; }
+    return syncProvider("GET");
+  }
+  const loadingProvider = attachProviderPicker();
   const removalDialog=el("removePaperDialog");
   let removalTarget=null,removalPending=false;
   el("removePaper").addEventListener("click",()=>{
@@ -1472,8 +1540,13 @@
     importStatus("");
   });
   el("confirmImport").addEventListener("click", async () => {
-    el("confirmImport").disabled = true;
     const prepare = el("researchOnImport").checked;
+    if (prepare && location.protocol !== "file:" && !window.getConfirmedModelProvider()) {
+      importStatus("Choose an AI provider before preparing the paper.");
+      el("changeImportProvider").focus();
+      return;
+    }
+    el("changeImportProvider").disabled = el("confirmImport").disabled = true;
     importStatus("Opening the document…");
     try {
       if (draftPdf) {
@@ -1495,7 +1568,7 @@
       importStatus("");
       focusReadingTitle();
     } catch (error) { importStatus(error.message); }
-    finally { el("confirmImport").disabled = false; }
+    finally { el("changeImportProvider").disabled = el("confirmImport").disabled = false; }
   });
   async function initialize() {
     for (const option of [...el("paperPicker").options]) {
@@ -1588,5 +1661,5 @@
     }
     openReferenceAtHash();
   });
-  initialize();
+  Promise.resolve(loadingProvider).then(initialize);
 })();

@@ -206,7 +206,7 @@ function libraryFixture(records = new Map()) {
   return {...window.PAPER_LIBRARY,indexedDB};
 }
 
-function createApp({local = storage(),library = libraryFixture(),search = '',post = [],poll = [],plans = [],diagnostics = [],structures = [],answers = [],removals = [],extractedPages = pages} = {}) {
+function createApp({local = storage(),library = libraryFixture(),search = '',post = [],poll = [],plans = [],diagnostics = [],structures = [],answers = [],removals = [],extractedPages = pages,modelSettings = {provider:'codex'}} = {}) {
   const document = documentFixture(), window = new EventTarget();
   const location = new URL('http://fixture.invalid/'+search);
   const calls = [], titles = [];
@@ -214,7 +214,14 @@ function createApp({local = storage(),library = libraryFixture(),search = '',pos
   document.onChange = node => { if (node.id === 'paperTitle') titles.push(node.textContent); };
   const json = body => ({ok:true,json:async () => body});
   async function fetch(url,args = {}) {
-    calls.push({url,method:args.method || 'GET',body:args.body});
+    calls.push({url,method:args.method || 'GET',body:args.body,headers:args.headers});
+    if (url === '/api/model-provider') {
+      if (args.method === 'PUT') {
+        if (modelSettings.saveError) return {ok:false,json:async()=>({error:modelSettings.saveError})};
+        modelSettings.provider=JSON.parse(args.body).provider;
+      }
+      return json({provider:modelSettings.provider});
+    }
     if (url === '/api/pdf') return json({pages:extractedPages});
     if (url === '/api/techniques' && post.length) return json(await post.shift());
     if (url.startsWith('/api/techniques/') && poll.length) return json(await poll.shift());
@@ -278,6 +285,76 @@ async function until(check,message) {
 const importedChoice = 'doc-'+hash;
 const fullPosts = app => app.calls.filter(c => c.url === '/api/techniques' && c.method === 'POST');
 const quickCalls = app => app.calls.filter(c => c.url.startsWith('/api/paper-question'));
+
+test('select Claude before importing, retain the choice on reopening, and switch back while reading',async()=>{
+  const modelSettings={provider:'codex'}, app=createApp({modelSettings});
+  await until(()=>app.el('activeProvider').textContent==='Codex','saved provider was not loaded');
+  app.fire('chooseProvider','click');
+  await until(()=>!app.el('providerChoice').disabled,'provider options did not open');
+  app.el('providerChoice').value='claude';
+  app.fire('providerChoice','change');
+  assert.match(app.el('providerSetup').textContent,/latest Opus/);
+  app.fire('saveProvider','click');
+  await until(()=>!app.el('providerDialog').open,'successful save did not dismiss settings');
+  assert.equal(modelSettings.provider,'claude');
+  app.fire('openImport','click');
+  assert.match(app.el('researchConsentLabel').textContent,/Use Claude/);
+  const reopened=createApp({modelSettings,post:[ready],plans:[personalized]});
+  await until(()=>reopened.el('activeProvider').textContent==='Claude','reopening forgot the provider');
+  await openPdf(reopened);
+  assert.equal(fullPosts(reopened)[0].headers['X-Naoma-Provider'],'claude');
+  await checkPublished(reopened);
+  reopened.fire('continuePreflight','click');
+  await until(()=>reopened.el('overviewPanel').hidden===false,'reading view did not open');
+  assert.equal(reopened.calls.find(c=>c.url==='/api/reading-plan' && c.method==='POST').headers['X-Naoma-Provider'],'claude');
+  reopened.fire('chooseProvider','click');
+  await until(()=>!reopened.el('providerChoice').disabled,'provider control missing during reading');
+  reopened.el('providerChoice').value='codex';
+  reopened.fire('providerChoice','change');
+  reopened.fire('saveProvider','click');
+  await until(()=>reopened.el('activeProvider').textContent==='Codex','switching back failed');
+  assert.equal(reopened.el('overviewPanel').hidden,false);
+});
+
+test('unknown server settings allow local reading but block sending a paper until a provider is confirmed',async()=>{
+  const modelSettings={provider:'invalid'};
+  const app=createApp({modelSettings,post:[ready]});
+  await until(()=>app.body.dataset.paperState==='preflight','the bundled paper did not open');
+  app.fire('openImport','click');
+  app.el('paperText').value='The two adjacent cells have a common edge.';
+  app.fire('confirmImport','click');
+  assert.equal(app.el('uploadDialog').open,true);
+  assert.match(app.el('importMessage').textContent,/Choose an AI provider/);
+  const withSource=async()=>({title:'Neighbouring cells',units:[{title:'Edge',text:'Two cells share an edge.'}]});
+  await app.window.READER_SESSION.prepare('unknown-provider',withSource);
+  assert.equal(fullPosts(app).length,0);
+  app.fire('changeImportProvider','click');
+  await until(()=>!app.el('providerChoice').disabled,'manual recovery was unavailable');
+  app.el('providerChoice').value='claude';
+  app.fire('providerChoice','change');
+  app.fire('saveProvider','click');
+  await until(()=>!app.el('providerDialog').open,'provider was not saved');
+  assert.equal(app.el('uploadDialog').open,true);
+  assert.match(app.el('researchConsentLabel').textContent,/Use Claude/);
+  await app.window.READER_SESSION.prepare('confirmed-provider',withSource);
+  assert.equal(fullPosts(app)[0].headers['X-Naoma-Provider'],'claude');
+});
+
+test('a rejected provider change stays open and reloads the confirmed server selection',async()=>{
+  const modelSettings={provider:'codex',saveError:'The preference could not be saved.'};
+  const app=createApp({modelSettings});
+  app.fire('chooseProvider','click');
+  await until(()=>!app.el('providerChoice').disabled,'saved choice did not load');
+  app.el('providerChoice').value='claude';
+  app.fire('providerChoice','change');
+  app.fire('saveProvider','click');
+  await until(()=>!app.el('retryProvider').hidden,'failed change offered no recovery');
+  assert.equal(app.el('providerDialog').open,true);
+  assert.equal(app.el('providerStatus').textContent,modelSettings.saveError);
+  assert.doesNotMatch(app.el('researchConsentLabel').textContent,/Claude/);
+  app.fire('retryProvider','click');
+  await until(()=>app.el('providerChoice').value==='codex','recovery did not read the saved value');
+});
 
 function styledPlan(referenceTitle) {
   return {...personalized,key:'plan-in-reference-notation',notationEdition:{revision:'paper-notation-1',referenceTitle,

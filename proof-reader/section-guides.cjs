@@ -5,6 +5,7 @@ const {createHash} = require('node:crypto');
 const {prepareRequest} = require('./ask-paper.cjs');
 const {writeAtomic,unexpectedCheckpoint} = require('./plan-checkpoints.cjs');
 const {generateLeanReading,leanReadingRevision} = require('./lean-reading.cjs');
+const {workerFailureCode,workerFailureMessage} = require('./worker-failure.cjs');
 
 const endpoint='/api/section-structure';
 const error=(status,message)=>Object.assign(new Error(message),{status});
@@ -43,18 +44,11 @@ const failureMessages={
   correspondence:'A step could not be supported by the original argument.',
   format:'The generated steps did not fit the reading format.',
   dependencies:'The generated steps did not link to the required earlier results.',
-  timeout:'Preparing these steps timed out.',
-  empty:'The reading service returned no explanation.',
-  network:'The reading service lost its connection.',
-  quota:'The reading service has reached its usage limit.',
-  login:'The reading service needs you to sign in to Codex.',
-  configuration:'The reading service could not start with its current settings.',
-  refused:'The reading service declined this request.',
-  installation:'The local reading service needs the Codex CLI to be available.',
-  exit:'The reading worker stopped before returning the explanation.',
   'unexpected-failure':'Couldn’t prepare this explanation. An unexpected error occurred.',
 };
-function publicFailure(stage,cause) {
+function publicFailure(stage,cause,provider) {
+  const serviceCode=workerFailureCode(cause);
+  if (serviceCode) return {failureStage:stage,failureCode:serviceCode,message:workerFailureMessage(serviceCode,provider)};
   const detail=cause?.message || '';
   let code='unexpected-failure';
   if (Object.hasOwn(failureMessages,cause?.workerCode)) code=cause.workerCode;
@@ -63,7 +57,7 @@ function publicFailure(stage,cause) {
   return {failureStage:stage,failureCode:code,message:failureMessages[code]};
 }
 
-function createSectionGuideHandler({worker,renderSourcePage,readLocalJson,checkLocalRequest,generate=generateLeanReading,paperCache,
+function createSectionGuideHandler({worker,selectWorker=()=>({provider:'codex',worker}),renderSourcePage,readLocalJson,checkLocalRequest,generate=generateLeanReading,paperCache,
   cacheDir=path.join(process.env.LOCALAPPDATA || process.env.XDG_CACHE_HOME || os.tmpdir(),'ProofReader','section-guides')}) {
   const jobs=new Map();
   const stored=k=>path.join(cacheDir,k+'.json');
@@ -104,7 +98,7 @@ function createSectionGuideHandler({worker,renderSourcePage,readLocalJson,checkL
     } catch { /* The cache can be rebuilt from the original paper. */ }
     return null;
   }
-  async function build(key,input) {
+  async function build(key,input,selection) {
     let stage='source';
     let recovery,feedback;
     function onStage(next) {
@@ -114,7 +108,7 @@ function createSectionGuideHandler({worker,renderSourcePage,readLocalJson,checkL
     let guide;
     for (let attempt=0;;attempt++) {
       try {
-        guide ||= await generate(input,{worker,renderSourcePage,onStage,feedback,
+        guide ||= await generate(input,{worker:selection.worker,renderSourcePage,onStage,feedback,
           loadDraft:()=>loadDraft(key),saveDraft:draft=>saveDraft(key,draft)});
         const result={key,status:'ready',...publicGuide(guide)};
         const transient=guide.modules.some(m=>['unavailable','timeout','error'].includes(m.verification?.status));
@@ -125,7 +119,7 @@ function createSectionGuideHandler({worker,renderSourcePage,readLocalJson,checkL
         jobs.set(key,result);
         return;
       } catch (cause) {
-        const failure=publicFailure(stage,cause);
+        const failure=publicFailure(stage,cause,selection.provider);
         const code=failure.failureCode;
         if (code==='unexpected-failure') {
           await fault(key).save(stage).catch(()=>{});
@@ -149,7 +143,7 @@ function createSectionGuideHandler({worker,renderSourcePage,readLocalJson,checkL
       }
     }
   }
-  async function submit(input,key) {
+  async function submit(input,key,selection) {
       let result=await load(key) || jobs.get(key);
       if (!result || result.status==='error') {
         if ([...jobs.values()].filter(j=>j.status==='running').length>=3) throw error(429,'Other sections are being prepared. Try this one again shortly.');
@@ -159,7 +153,7 @@ function createSectionGuideHandler({worker,renderSourcePage,readLocalJson,checkL
         }
         result={key,status:'running',stage:'source'};
         jobs.set(key,result);
-        void build(key,input);
+        void build(key,input,selection);
       }
       return result;
   }
@@ -168,7 +162,8 @@ function createSectionGuideHandler({worker,renderSourcePage,readLocalJson,checkL
     let result;
     if (route===endpoint && req.method==='POST') {
       const {input,key}=sectionRequest(await readLocalJson(req,24*1024*1024));
-      result=paperCache ? await paperCache.submit('section',input,key,id=>submit(input,id)) : await submit(input,key);
+      const selection=await selectWorker(req);
+      result=paperCache ? await paperCache.submit('section',input,key,id=>submit(input,id,selection)) : await submit(input,key,selection);
     } else if (req.method==='GET' && /^\/api\/section-structure\/[0-9a-f]{64}$/u.test(route)) {
       const key=route.slice(endpoint.length+1);
       result=jobs.get(key) || await load(key);

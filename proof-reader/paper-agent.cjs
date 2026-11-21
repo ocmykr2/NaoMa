@@ -5,6 +5,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const {unexpectedCheckpoint}=require('./plan-checkpoints.cjs');
+const {workerFailureCode,workerFailureMessage}=require('./worker-failure.cjs');
 
 const MiB = 1024 * 1024;
 const skillDirectory = path.join(__dirname, 'skills', 'paper-techniques');
@@ -401,19 +402,8 @@ function validateResult(result, unitCount, {units, verifiedCache = false, verifi
     ...(prepared ? {displayTitle, preparationVersion: version} : {}), ...reading};
 }
 
-const workerMessages = {
-  timeout: 'The paper agent timed out. Try a shorter selection or run it again.',
-  login: 'Sign in to the local Codex CLI, then retry.',
-  quota: 'The Codex account reached a usage limit. Retry when usage is available.',
-  network: 'The local Codex worker could not reach its service. Check the connection and retry.',
-  refused: 'Codex declined this preparation request. Check the selected model and the requested material.',
-  configuration: 'The Codex CLI rejected the request settings. Check the model and CLI configuration.',
-  installation: 'Check the Codex CLI installation and sign in, then retry.',
-  exit: 'The local Codex worker stopped before completing this step. Retry to continue from the last saved work.',
-  empty: 'The local Codex worker returned no result for this step. Retry to continue from the last saved work.',
-};
 function workerFailure(workerCode) {
-  return Object.assign(new AgentError(503, workerMessages[workerCode]), {workerCode});
+  return Object.assign(new AgentError(503, workerFailureMessage(workerCode)), {workerCode});
 }
 async function hasWorkerOutput(outputPath) {
   try {
@@ -713,7 +703,8 @@ async function preparationAssets(input) {
     .update(JSON.stringify(input.paper)).update('\0').update(input.pdf || '').digest('hex');
   return {key,assets:{skill,knowledge,attribution,schema}};
 }
-function createPaperAgentHandler({cacheDir = defaultCache(), runner = runCodexWorker,paperCache} = {}) {
+function createPaperAgentHandler({cacheDir = defaultCache(), runner = runCodexWorker,
+  selectWorker=()=>({provider:'codex',worker:runner}),paperCache} = {}) {
   const active = new Map();
   const failures = new Map();
   const queued = [];
@@ -744,10 +735,10 @@ function createPaperAgentHandler({cacheDir = defaultCache(), runner = runCodexWo
   }
 
   async function finish(job) {
-    const {key, input, assets} = job;
+    const {key, input, assets, selection} = job;
     let stage='analysis';
     try {
-      const result = await runPaper(input, assets, runner,recovery=>{
+      const result = await runPaper(input, assets, selection.worker,recovery=>{
         active.set(key,{progress:{stage:'recovering',recovery}});
       });
       stage='saving';
@@ -764,14 +755,16 @@ function createPaperAgentHandler({cacheDir = defaultCache(), runner = runCodexWo
     } catch (error) {
       if (failures.size >= 64) failures.delete(failures.keys().next().value);
       const storageFailure=['ENOSPC','EACCES','EPERM','EBUSY','EMFILE'].includes(error.code);
-      const actionRequired=({login:'sign-in',quota:'quota',refused:'review'})[error.workerCode] ||
+      const code=workerFailureCode(error);
+      const actionRequired=({login:'sign-in',quota:'quota',refused:'review'})[code] || (code?'service':null) ||
         (error.status===422?'source':error instanceof ResearchValidationError?'review':error instanceof AgentError || storageFailure?'service':'bug');
       if (actionRequired==='bug') {
         await fault(key).save(stage).catch(()=>{});
         failures.set(key,unexpected(key,stage));
       } else failures.set(key,{key,status:'error',needsAction:true,actionRequired,papers:[],
-        failureStage:stage,failureCode:error.workerCode || (storageFailure?'storage-error':error instanceof ResearchValidationError?'invalid-output':actionRequired),
-        message:error instanceof AgentError ? error.message : 'Check the local storage available to the reading service.'});
+        failureStage:stage,failureCode:code || (storageFailure?'storage-error':error instanceof ResearchValidationError?'invalid-output':actionRequired),
+        message:code?workerFailureMessage(code,selection.provider):
+          error instanceof AgentError ? error.message : 'Check the local storage available to the reading service.'});
     } finally {
       active.delete(key);
       workers--;
@@ -786,7 +779,7 @@ function createPaperAgentHandler({cacheDir = defaultCache(), runner = runCodexWo
     }
   }
 
-  async function submit(input,assets,key) {
+  async function submit(input,assets,key,selection) {
     if (active.has(key)) return running(key);
     const saved = await cached(key);
     if (saved?.preparationVersion === preparationVersion) return ready(key, saved);
@@ -794,7 +787,7 @@ function createPaperAgentHandler({cacheDir = defaultCache(), runner = runCodexWo
     if (active.size >= 6) throw new AgentError(429, 'The local reader has six analyses in progress. Try again after one finishes.');
     failures.delete(key);
     active.set(key, true);
-    queued.push({key,input,assets});
+    queued.push({key,input,assets,selection});
     pump();
     return running(key);
   }
@@ -806,7 +799,13 @@ function createPaperAgentHandler({cacheDir = defaultCache(), runner = runCodexWo
       let response;
       if (pathname === '/api/techniques' && req.method === 'POST') {
         const input=normalizeInput(await readLocalJson(req,maxBody)), {key,assets}=await preparationAssets(input);
-        response=paperCache ? await paperCache.submit('analysis',input,key,id=>submit(input,assets,id)) : await submit(input,assets,key);
+        let selection;
+        try { selection=await selectWorker(req); }
+        catch (error) {
+          if (error.status===409) throw new AgentError(409,error.message);
+          throw error;
+        }
+        response=paperCache ? await paperCache.submit('analysis',input,key,id=>submit(input,assets,id,selection)) : await submit(input,assets,key,selection);
       } else if (/^\/api\/techniques\/[a-f0-9]{64}$/.test(pathname) && req.method === 'GET') {
         const key = pathname.slice('/api/techniques/'.length);
         if (active.has(key)) response = running(key);

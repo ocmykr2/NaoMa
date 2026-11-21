@@ -54,8 +54,8 @@ async function temporaryCache(t) {
   return dir;
 }
 
-function client(cacheDir, worker) {
-  const handle = createPlanHandler({cacheDir,worker,readLocalJson: async req => req.body,checkLocalRequest() {}});
+function client(cacheDir, worker, selectWorker) {
+  const handle = createPlanHandler({cacheDir,worker,selectWorker,readLocalJson: async req => req.body,checkLocalRequest() {}});
   async function send(method, route, body) {
     let status, value;
     await handle({method,body},{
@@ -85,6 +85,30 @@ function assertPrivate(report) {
   const json = JSON.stringify(report);
   for (const excerpt of [printed,section,wrongQuote,source]) assert.equal(json.includes(excerpt),false);
 }
+
+test('plan drafting and editorial review use the provider selected at submission',async t=>{
+  const cacheDir=await temporaryCache(t);
+  let provider='claude';
+  const outputs=[];
+  const claude=async ({directory,outputPath})=>{
+    const name=path.basename(outputPath);
+    outputs.push(name);
+    provider='codex';
+    const parts=name==='edited.json'
+      ? JSON.parse(await fs.readFile(path.join(directory,'editor-input.json'),'utf8')).parts.map(editorRow)
+      : [draft(printed)];
+    await fs.writeFile(outputPath,JSON.stringify({parts}));
+  };
+  const codex=()=>assert.fail('Unexpected Codex call');
+  const api=client(cacheDir,codex,async req=>{
+    assert.equal(req.method,'POST');
+    return {provider,worker:provider==='claude'?claude:codex};
+  });
+  const plan=await api.finished(await api.post());
+  assert.equal(plan.status,'ready',plan.message);
+  assert.deepEqual(outputs,['plan.json','edited.json']);
+  assert.equal((await api.post()).status,'ready');
+});
 
 test('a definition source rejection is diagnosable after restart and a successful retry retains its history',async t => {
   const dir = await temporaryCache(t);

@@ -17,7 +17,7 @@
     });
   }
   async function request(url, args) {
-    if (location.protocol === "file:") throw new Error("Open the local app to use Codex.");
+    if (location.protocol === "file:") throw new Error("Open the local app to use your AI provider.");
     // Each request only transfers a document or reads one status snapshot. The
     // background generation has its own lifetime and may outlive any request.
     const timeout=args?.method==="POST" ? 60000 : 20000;
@@ -38,6 +38,11 @@
   }
   async function post(url,payload) {
     const args={method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)};
+    if (window.getConfirmedModelProvider) {
+      const provider=window.getConfirmedModelProvider();
+      if (!provider) throw Object.assign(new Error("Open AI provider and confirm which provider to use, then retry."),{needsAction:true});
+      args.headers["X-Naoma-Provider"]=provider;
+    }
     try { return await request(url,args); }
     catch (error) {
       // All four job endpoints deduplicate an identical submission. The first
@@ -734,7 +739,7 @@
   const transientPlanError=error=>error.disconnected || [408,429,502,503,504].includes(error.status);
   function legacyRepair(error) {
     return !error.unexpected && !error.needsAction &&
-      /^(?:The notation (?:could not be adapted|correction)|The (?:source check needs another pass|source revision omitted|formatting correction for)|The (?:source for|review of) .+ (?:needs|still needs)|The personalized plan was incomplete|Codex (?:timed out during this step|could not finish the personalized plan)|The local Codex worker (?:stopped before completing|returned no result)|The reading service lost the job before the plan was saved)/.test(error.message || "");
+      /^(?:The notation (?:could not be adapted|correction)|The (?:source check needs another pass|source revision omitted|formatting correction for)|The (?:source for|review of) .+ (?:needs|still needs)|The personalized plan was incomplete|(?:Codex|Claude) (?:timed out during this step|could not finish the personalized plan)|The local (?:Codex|Claude) worker (?:stopped before completing|returned no result)|The reading service lost the job before the plan was saved)/.test(error.message || "");
   }
   function wakeStudy(key,source,analysis,job) {
     if (!window.setTimeout || studyWakeups.has(job)) return;

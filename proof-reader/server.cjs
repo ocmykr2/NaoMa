@@ -10,11 +10,22 @@ const { createPlanHandler } = require('./personalized-plan.cjs');
 const { createSectionGuideHandler } = require('./section-guides.cjs');
 const {createPaperCache}=require('./paper-cache.cjs');
 const {createClearPaperHandler}=require('./clear-paper.cjs');
+const {createProviderSettings} = require('./model-provider.cjs');
+const {runClaudeWorker} = require('./claude-worker.cjs');
 
 const searchLiterature = createLiteratureSearch();
 const paperCache=createPaperCache();
-const handlers={worker:runCodexWorker,readLocalJson,checkLocalRequest,renderSourcePage:renderPage,paperCache};
-const handleTechniques = createPaperAgentHandler({paperCache});
+const providerSettings = createProviderSettings();
+async function selectWorker(req) {
+  const provider = await providerSettings.get();
+  const displayed = req.headers['x-naoma-provider'];
+  if (displayed !== undefined && displayed !== provider) {
+    throw new RequestError(409, 'The AI provider changed. Open AI provider to confirm your choice, then try again.');
+  }
+  return {provider, worker: provider === 'claude' ? runClaudeWorker : runCodexWorker};
+}
+const handlers={worker:runCodexWorker,selectWorker,readLocalJson,checkLocalRequest,renderSourcePage:renderPage,paperCache};
+const handleTechniques = createPaperAgentHandler({paperCache,selectWorker});
 const handleQuestion = createQuestionHandler(handlers);
 const handlePlan = createPlanHandler(handlers);
 const handleSection = createSectionGuideHandler(handlers);
@@ -198,6 +209,22 @@ const server = http.createServer({ requestTimeout: 30000, headersTimeout: 15000 
   res.setHeader('X-Content-Type-Options', 'nosniff');
   const [route, query] = req.url.split('?');
   try {
+    if (route === '/api/model-provider') {
+      checkLocalRequest(req);
+      let provider;
+      if (req.method === 'PUT') {
+        const settings = await readLocalJson(req, 512);
+        provider = await providerSettings.set(settings?.provider);
+      } else if (req.method === 'GET') {
+        provider = await providerSettings.get();
+      } else {
+        res.setHeader('Allow', 'GET, PUT');
+        throw new RequestError(405, 'Use GET or PUT for the AI provider setting.');
+      }
+      res.writeHead(200, {'Content-Type': 'application/json; charset=utf-8'});
+      res.end(JSON.stringify({provider}));
+      return;
+    }
     if (route==='/api/paper-cache/clear') {
       await handleClearPaper(req,res);
       return;

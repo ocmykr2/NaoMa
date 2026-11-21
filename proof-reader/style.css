@@ -1044,6 +1044,22 @@ dialog::backdrop { background: #22292265; }
 .dialog-head h2 { font: 700 1.65rem/1.45 var(--serif); }
 dialog label { display: block; margin-block: .75rem .35rem; font-weight: 550; }
 dialog p { color: var(--muted); }
+#chooseProvider { white-space: nowrap; }
+#activeProvider:empty { display: none; }
+#activeProvider { color: var(--accent-dark); }
+@media (max-width: 64rem) {
+  #chooseProvider:has(#activeProvider:not(:empty)) > :first-child { display: none; }
+}
+#chooseProvider::after {
+  content: ""; width: .38rem; height: .38rem; margin-top: -.2rem;
+  border: solid currentColor; border-width: 0 1px 1px 0; transform: rotate(45deg);
+}
+#providerDialog { max-width: 27rem; }
+#providerChoice {
+  width: 100%; padding: .55rem .65rem; border: 1px solid var(--line);
+  border-radius: .45rem; font: inherit; color: var(--ink); background: var(--paper);
+}
+#providerSetup, #providerStatus:not(:empty) { margin: .65rem 0; font-size: .91rem; }
 .remove-paper { white-space: nowrap; }
 #removePaperDialog { max-width: min(30rem, calc(100vw - 2rem)); }
 #removePaperTitle { color: var(--ink); font-weight: 600; overflow-wrap: anywhere; }
@@ -1231,6 +1247,11 @@ dialog :is(footer, .dialog-actions) { display: flex; flex-wrap: wrap; justify-co
 #askStatus:not(:empty), #researchStatus:not(:empty) { margin-top: .5rem; }
 .research-consent { display: flex; align-items: baseline; gap: .45rem; font-size: .93rem; }
 .research-consent input { margin: 0; accent-color: var(--accent); }
+#changeImportProvider {
+  display: block; margin: 0 0 .5rem 1.35rem; padding: .12rem 0;
+  border: 0; color: var(--accent-dark); background: transparent;
+  font: inherit; font-size: .88rem; text-decoration: underline; text-underline-offset: .15em;
+}
 #profileDialog h3 { margin: .8rem 0 0; font-size: 1rem; }
 #profileDialog:has(.knowledge-section) { width: min(43rem, calc(100vw - 2rem)); }
 #profileDialog:has(.knowledge-section) .dialog-head {
@@ -1529,16 +1550,6 @@ dialog :is(footer, .dialog-actions) { display: flex; flex-wrap: wrap; justify-co
   .paper-picker select { max-width: clamp(7rem, 29vw, 13rem); text-overflow: ellipsis; }
   .workspace { padding-inline: clamp(1rem, 4vw, 2rem); }
   .reading { padding: .85rem 0 2rem; }
-  .reading:has(#backOverview[hidden]) > .explore-bar {
-    position: absolute;
-    inset: .5rem auto auto 11.6rem;
-    width: fit-content;
-    padding: 0;
-    margin: 0;
-    border: 0;
-    background: transparent;
-  }
-  .reading:has(#backOverview[hidden]) .paper-tools[open] #exploreTools { left: 0; right: auto; }
   .paper-tools > summary { padding: .28rem .2rem; }
   .paper-head { padding-bottom: .08rem; }
   .paper-head h1 {
@@ -1568,9 +1579,20 @@ dialog :is(footer, .dialog-actions) { display: flex; flex-wrap: wrap; justify-co
   .suggestion-list button { min-height: 1.85rem; padding-block: .13rem; font-size: .875rem; }
   .explore-bar { margin-bottom: .45rem; }
 }
+@media (min-width: 52rem) and (max-width: 64rem) and (max-height: 39rem) {
+  .reading:has(#backOverview[hidden]) > .explore-bar {
+    position: absolute;
+    inset: .5rem auto auto 11.6rem;
+    width: fit-content;
+    padding: 0;
+    margin: 0;
+    border: 0;
+    background: transparent;
+  }
+  .reading:has(#backOverview[hidden]) .paper-tools[open] #exploreTools { left: 0; right: auto; }
+}
 @media (min-width: 32rem) and (max-width: 35.75rem) and (max-height: 39rem) {
   .wordmark { font-size: .97rem; }
-  .reading:has(#backOverview[hidden]) > .explore-bar { left: 10.5rem; }
   .paper-picker select { max-width: 18vw; }
 }
 

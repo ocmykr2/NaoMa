@@ -65,6 +65,34 @@ test('a stopped section reports its stage and a safe reason without disclosing s
   assert.match(failed.message,/original section/);
 });
 
+test('section formulation uses Claude and surfaces its actionable CLI error',async t=>{
+  const cacheDir=await fs.mkdtemp(path.join(os.tmpdir(),'reader-section-provider-'));
+  t.after(()=>fs.rm(cacheDir,{recursive:true,force:true}));
+  const endpoint='/api/section-structure';
+  const body={title:'Counting ordered pairs',studyKey:'pair-count',analysisKey:'pairs',
+    units:[{title:'First coordinate',text:'Fix the first coordinate and count the remaining choices.'}],
+    stage:{partId:'coordinate',title:'Fix a coordinate',sourceSteps:[1],opening:'Fix the first coordinate.',question:'What is left to choose?'}};
+  let calls=0;
+  const api=createSectionGuideHandler({cacheDir,readLocalJson:req=>req.body,checkLocalRequest(){},
+    worker:()=>assert.fail('Unexpected default worker'),
+    selectWorker:async()=>({provider:'claude',worker:async()=>{
+      calls++;throw Object.assign(Error('private diagnostic'),{workerCode:'installation'});
+    }})});
+  async function request(method,url) {
+    let result;await api({method,body},{writeHead(){},end:s=>result=JSON.parse(s)},url);return result;
+  }
+  const started=await request('POST',endpoint);
+  let job=started;
+  for(let i=0; i<200 && job.status==='running'; i++) {
+    await delay(10);job=await request('GET',endpoint+'/'+started.key);
+  }
+  assert.equal(calls,1);
+  assert.equal(job.failureCode,'installation');
+  assert.equal(job.actionRequired,'service');
+  assert.match(job.message,/Claude Code/);
+  assert.doesNotMatch(job.message,/private diagnostic|Codex/);
+});
+
 test('a retry can recheck its private formulation across restarts and removal clears it',async t=>{
   const cacheDir=await fs.mkdtemp(path.join(os.tmpdir(),'reader-section-draft-'));
   t.after(()=>fs.rm(cacheDir,{recursive:true,force:true}));

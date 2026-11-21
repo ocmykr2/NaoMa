@@ -34,12 +34,12 @@ function fullManifest() {
   return {techniques, definitionGroups};
 }
 
-function tutor(worker) {
+function tutor(worker,selectWorker) {
   const prompts = [];
   const finished = new Map();
   const endpoint = '/api/paper-question';
   const handle = createQuestionHandler({
-    checkLocalRequest() {}, readLocalJson: req => req.body,
+    checkLocalRequest() {}, readLocalJson: req => req.body,selectWorker,
     worker: worker || (async ({prompt, outputPath}) => {
       prompts.push(JSON.parse(prompt.split('Session data (JSON):\n\n').at(-1)));
       await writeFile(outputPath, JSON.stringify({unit: 1, answer: 'The cutoff closes the interval.',
@@ -62,6 +62,30 @@ function tutor(worker) {
     return job.key;
   }};
 }
+
+test('a question and its formatting pass stay on one provider and identical questions are cached per provider', async () => {
+  let provider='claude';
+  const calls=[];
+  function makeWorker(name) {
+    return async ({outputPath})=>{
+      calls.push(name);
+      const first=calls.length===1;
+      if (first) provider='codex';
+      const answer=first?'**The endpoint stays.**':'The endpoint stays.';
+      await writeFile(outputPath,JSON.stringify({unit:1,answer,followups:['Why does the endpoint stay?'],discussedSkill:''}));
+    };
+  }
+  const workers={claude:makeWorker('claude'),codex:makeWorker('codex')};
+  const {ask}=tutor(()=>assert.fail('Unexpected default worker'),async()=>({provider,worker:workers[provider]}));
+  const first=await ask(question);
+  assert.deepEqual(calls,['claude','claude']);
+  const second=await ask(question);
+  assert.notEqual(first,second);
+  assert.equal(await ask(question),second);
+  provider='claude';
+  assert.equal(await ask(question),first);
+  assert.deepEqual(calls,['claude','claude','codex']);
+});
 
 test('small reader profiles and older requests reach the worker unchanged', async () => {
   const {ask, prompts} = tutor();

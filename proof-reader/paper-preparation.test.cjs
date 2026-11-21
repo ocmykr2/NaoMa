@@ -174,6 +174,33 @@ test('preparation sees the original opening, excludes the filename, and persists
   assert.deepEqual(await request(restarted, 'GET', route + '/' + result.key), result);
 });
 
+test('analysis pins its provider through a retry and reports a Claude login failure without exposing raw diagnostics', async t=>{
+  const cacheDir=await cacheFor(t);
+  let provider='claude',calls=0;
+  const workers={
+    claude:async ({outputPath})=>{
+      calls++;
+      if (calls===1) {
+        provider='codex';
+        throw Object.assign(Error('temporary connection failure'),{workerCode:'network'});
+      }
+      if (calls===2) return fs.writeFile(outputPath,JSON.stringify(complete('Degree Sums')));
+      throw Object.assign(Error('private source excerpt'),{workerCode:'login'});
+    },
+    codex:()=>assert.fail('Unexpected Codex call'),
+  };
+  const handle=createPaperAgentHandler({cacheDir,selectWorker:async()=>({provider,worker:workers[provider]})});
+  const first=await finish(handle,paper);
+  assert.equal(first.status,'ready');
+  assert.deepEqual(await finish(handle,paper),first);
+  assert.equal(calls,2);
+  provider='claude';
+  const blocked=await finish(handle,{...paper,sourceOpening:'A second count.'});
+  assert.equal(blocked.actionRequired,'sign-in');
+  assert.match(blocked.message,/Claude/);
+  assert.doesNotMatch(blocked.message,/private source|Codex/);
+});
+
 test('an untitled excerpt can receive an English descriptive title without any upload label', async t => {
   const dir = await cacheFor(t);
   const title = 'Counting the Two Ends of an Edge';
