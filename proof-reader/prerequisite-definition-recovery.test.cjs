@@ -5,6 +5,15 @@ const fs=require('node:fs/promises'),os=require('node:os'),path=require('node:pa
 const {setTimeout:delay}=require('node:timers/promises');
 const {createPlanHandler}=require('./personalized-plan.cjs');
 
+async function prepare(cacheDir,body,worker) {
+  const endpoint='/api/reading-plan',api=createPlanHandler({cacheDir,worker,renderSourcePage:async()=>Buffer.from('page'),
+    waitForRecovery:async()=>{},readLocalJson:async req=>req.body,checkLocalRequest(){}});
+  async function request(method,url){let result;await api({method,body},{writeHead(){},end(data){result=JSON.parse(data);}},url);return result;}
+  let job=await request('POST',endpoint);
+  for (let n=0;n<500 && job.status==='running';n++){await delay(10);job=await request('GET',endpoint+'/'+job.key);}
+  return job;
+}
+
 test('a downstream definition can use its declared origin after a fresh full-card check',async t=>{
   const title='Striped distance',definition='The striped distance counts striped edges on the unique path between two sites.';
   const application='The striped distance stays the same when the path is reversed.';
@@ -62,11 +71,7 @@ test('a downstream definition can use its declared origin after a fresh full-car
       }
       await fs.writeFile(outputPath,JSON.stringify(output));
     }
-    const endpoint='/api/reading-plan',api=createPlanHandler({cacheDir,worker,renderSourcePage:async()=>Buffer.from('page'),
-      waitForRecovery:async()=>{},readLocalJson:async req=>req.body,checkLocalRequest(){}});
-    async function request(method,url){let result;await api({method,body},{writeHead(){},end(data){result=JSON.parse(data);}},url);return result;}
-    let job=await request('POST',endpoint);
-    for (let n=0;n<500 && job.status==='running';n++){await delay(10);job=await request('GET',endpoint+'/'+job.key);}
+    const job=await prepare(cacheDir,body,worker);
     if (scenario==='declared' || scenario==='text source') {
       assert.equal(job.status,'ready',job.message);
       assert.equal(originChecks,1);assert.equal(fallback,0);
@@ -76,5 +81,41 @@ test('a downstream definition can use its declared origin after a fresh full-car
       assert.equal(job.status,'error',scenario);assert.equal(job.parts,undefined);assert.ok(fallback>0);
       assert.equal(originChecks,scenario==='undeclared'?0:1);
     }
+  }
+});
+
+test('qualitative restrictions in an intuition are checked against the formal definition and repaired if missing',async t=>{
+  const definition='The striped distance counts the striped edges in the unique path between two sites.';
+  const supported='An edge contributes only if the edge on the unique path is striped.';
+  const unsupported='An edge contributes only if the endpoint carries a copper seal.';
+  const body={title:'Distance in a tree',units:[{title:'Distance',text:definition}],analysis:{
+    parts:[{id:'tree',title:'Count the striped edges',summary:definition,sourceSteps:[1],techniqueIds:[],definitionGroupIds:[],localPrerequisiteIds:[]}],
+    localIntroductions:[],knowledge:{techniques:[],definitionGroups:[]}},readerKnowledge:{techniques:[],definitionGroups:[]}};
+  for (const initial of [supported,unsupported]) {
+    const cacheDir=await fs.mkdtemp(path.join(os.tmpdir(),'naoma-definition-condition-'));
+    t.after(()=>fs.rm(cacheDir,{recursive:true,force:true}));
+    let drafts=0,reviews=0;
+    const result=await prepare(cacheDir,body,async({outputPath,directory})=>{
+      let row;
+      if (path.basename(outputPath)==='plan.json') {
+        drafts++;
+        if (drafts>1) {
+          const [target]=JSON.parse(await fs.readFile(path.join(directory,'drafts.json'),'utf8'));
+          assert.match(target.reason,/include defining conditions in the formal text/);
+        }
+        row={id:'tree',question:'Which edges contribute to the distance?',orientation:{introduction:'Count the edges on the path.',
+          paragraphs:[definition],definitions:[{name:'Striped distance',text:definition,intuition:drafts>1?supported:initial,
+            sourceStep:1,sourceQuote:definition,dependsOn:[]}],notation:[],handoff:'',statement:null}};
+      } else {
+        assert.equal(path.basename(outputPath),'edited.json');reviews++;
+        const {parts:[{id,orientation:o}]}=JSON.parse(await fs.readFile(path.join(directory,'editor-input.json'),'utf8'));
+        row={id,introduction:o.introduction,paragraphs:o.paragraphs,handoff:'',formalAfter:0,referenceNotation:null,
+          proseNotationCards:[],notationEvidence:[],definitionCorrections:[],sourceCheck:'Checked which edges contribute against the original definition.',unresolved:''};
+      }
+      await fs.writeFile(outputPath,JSON.stringify({parts:[row]}));
+    });
+    assert.equal(result.status,'ready',result.message);
+    assert.equal(result.parts[0].orientation.definitions[0].intuition,supported);
+    assert.equal(reviews,1);assert.equal(drafts,initial===supported?1:2);
   }
 });

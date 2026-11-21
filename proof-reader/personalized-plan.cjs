@@ -495,7 +495,8 @@ function definitionOrder(definitions,raw,units,allowedSteps,visualPages,verified
       const formal=displayedText(definitions[i].text), restriction=displayedText(condition);
       const numbers=new Set(formal.match(/\d+(?:\.\d+)?/gu)||[]),terms=conceptWords(restriction);
       const novelNumber=(restriction.match(/\d+(?:\.\d+)?/gu)||[]).some(n=>!numbers.has(n));
-      if (novelNumber || (terms.size>=3 && [...terms].filter(w=>cardTerms.has(w)).length<terms.size/2)) {
+      const formalTerms=conceptWords(formal);
+      if (novelNumber || (terms.size>=3 && [...terms].filter(w=>formalTerms.has(w)).length<terms.size/2)) {
         throw new Error('Incomplete personalized reading plan: include defining conditions in the formal text for '+name+
           ', and keep branch assumptions or derived estimates in the proof paragraphs.');
       }
