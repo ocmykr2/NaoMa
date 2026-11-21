@@ -172,6 +172,7 @@ async function installWindowsRuntime() {
     if (error.killed) detail='The pinned Lean installation exceeded its time limit.';
     else if (log.includes('published SHA-256')) detail='The Lean release archive failed the pinned SHA-256 check.';
     else if (log.includes('could not be downloaded')) detail='The official Lean release could not be downloaded.';
+    else if (log.includes('Lean runtime path is too long')) detail='The Windows Lean compiler needs a shorter path. Install the pinned runtime in a short directory and set PROOF_READER_LEAN to its bin\\lean.exe.';
     else if (log.includes('sample theorem')) detail='The installed Lean release could not verify its sample theorem.';
     throw Object.assign(new Error(detail),{code:'LEAN_INSTALL_UNAVAILABLE'});
   }

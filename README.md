@@ -9,7 +9,7 @@ NaoMa is an interactive reader for mathematical papers. Import a paper, tell it 
 1. Install Node.js 24 and make sure `node --version` works in a new terminal. The desktop window also uses the Microsoft Edge WebView2 Evergreen Runtime. [Node.js downloads](https://nodejs.org/en/download) · [WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/)
 2. To prepare a paper or ask questions, install the Codex CLI and sign in with your own account. Check that `codex --version` works. [Codex CLI](https://developers.openai.com/codex/cli/)
 3. For PDF import, install Poppler and put its tools on your `PATH`. NaoMa uses `pdftotext`, `pdfinfo`, and `pdftoppm`. You can also paste a proof or import a text file. [Poppler](https://poppler.freedesktop.org/)
-4. Allow about 2.6 GB for the extracted app and its Lean libraries. Extract the **entire** release ZIP. Open `proof-reader/start-reader.cmd` or double-click `proof-reader/desktop/Proof Reader.exe`. Keep the extracted folders together.
+4. Allow about 2.6 GB for the extracted app and its Lean libraries. Extract the **entire** release ZIP into a short path such as `C:\Apps`, since Lean on Windows has a path-length limit. Open `proof-reader/start-reader.cmd` or double-click `proof-reader/desktop/Proof Reader.exe`. Keep the extracted folders together.
 
 The first window offers an interval-scheduling example. Choose **Import paper** to start with your own material.
 

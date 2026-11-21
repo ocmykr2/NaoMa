@@ -11,12 +11,16 @@ $Root = [IO.DirectoryInfo]::new($ExecutionContext.SessionState.Path.GetUnresolve
 if (!$Root -or $Root -eq [IO.Path]::GetPathRoot($Root).TrimEnd('\')) { throw 'Choose a dedicated directory for the Lean runtime.' }
 $runtime = Join-Path $Root $version
 $previous = Join-Path $Root ('.previous-' + $version)
-$staging = Join-Path $Root ('.install-' + [Guid]::NewGuid().ToString('N'))
+# The native compiler opens modules through the full runtime path. Keep staging
+# as short as the final version directory when verifying a cold installation.
+$staging = Join-Path $Root '.stage'
+$markerName = '.naoma-lean-stage'
+$marker = Join-Path $staging $markerName
 
 function Assert-ManagedDirectory([string]$Path) {
     $name = [IO.Path]::GetFileName($Path)
     if ([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($Path)) -ne $Root -or
-        ($name -ne $version -and $name -ne ('.previous-' + $version) -and $name -notmatch '^\.install-[a-f0-9]{32}$')) {
+        ($name -ne $version -and $name -ne '.stage' -and $name -ne ('.previous-' + $version) -and $name -notmatch '^\.install-[a-f0-9]{32}$')) {
         throw 'Unexpected managed runtime directory.'
     }
     $item = Get-Item -Force -LiteralPath $Path -ErrorAction SilentlyContinue
@@ -142,10 +146,19 @@ function Expand-VerifiedRelease([string]$ZipPath) {
         $zip = [IO.Compression.ZipArchive]::new($stream, [IO.Compression.ZipArchiveMode]::Read, $true)
         try {
             $prefix = "lean-$version-windows/"
-            foreach ($item in $zip.Entries) {
+            $entries = foreach ($item in $zip.Entries) {
                 if (!$item.FullName.StartsWith($prefix, [StringComparison]::Ordinal)) { continue }
                 $relative = $item.FullName.Substring($prefix.Length)
                 if ($relative -notmatch '^(?:bin/(?:lean\.exe|[^/]+\.dll)|lib/lean/(?:[^/]+/)*[^/]+\.(?:olean(?:\.private|\.server)?|ir|dll)|LICENSE(?:S)?(?:\.txt|/.*)?)$' -or !$item.Name) { continue }
+                # This pinned Windows compiler fails to open module paths of 260
+                # characters even on systems where the extractor can write them.
+                if (([IO.Path]::Combine($runtime, $relative)).Length -ge 260) {
+                    throw 'The Lean runtime path is too long. Choose a shorter installation root for this Windows compiler.'
+                }
+                $item
+            }
+            foreach ($item in $entries) {
+                $relative = $item.FullName.Substring($prefix.Length)
                 $destination = [IO.Path]::GetFullPath((Join-Path $staging $relative))
                 if (!$destination.StartsWith($staging + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Unexpected archive path.' }
                 [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($destination))
@@ -165,6 +178,7 @@ public static extern uint SetErrorMode(uint mode);
 }
 $lock = Get-InstallLock
 $oldErrorMode = [NaoMa.RuntimeProbe]::SetErrorMode(0x8003)
+$ownsStage = $false
 try {
     Assert-ManagedDirectory $runtime
     Assert-ManagedDirectory $previous
@@ -180,7 +194,15 @@ try {
         Remove-WhenUnused $previous
         return
     }
+    if ([IO.Directory]::Exists($staging)) {
+        if (![IO.File]::Exists($marker) -and [IO.Directory]::GetFileSystemEntries($staging).Length -gt 0) {
+            throw 'The staging directory already contains unrelated files. Choose a dedicated Lean installation root.'
+        }
+        Remove-ManagedDirectory $staging
+    }
     [void][IO.Directory]::CreateDirectory($staging)
+    $ownsStage = $true
+    [IO.File]::WriteAllText($marker, $version)
     if ($Archive) {
         $zipPath = (Resolve-Path -LiteralPath $Archive).ProviderPath
     } else {
@@ -201,10 +223,11 @@ try {
         }
         throw
     }
+    [IO.File]::Delete((Join-Path $runtime $markerName))
     Remove-WhenUnused $previous
 } finally {
     try {
-        Remove-WhenUnused $staging
+        if ($ownsStage) { Remove-WhenUnused $staging }
     } finally {
         $lock.Dispose()
         [void][NaoMa.RuntimeProbe]::SetErrorMode($oldErrorMode)

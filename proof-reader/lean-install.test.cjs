@@ -45,11 +45,15 @@ const officialArchive = process.env.NAOMA_TEST_LEAN_ARCHIVE;
 test('the real Windows release installs concurrently, repairs a broken compiler and reuses a verified runtime', {
   skip: !windows || !officialArchive,
 }, async t => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'naoma-lean-real-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'naoma-lean-real-'));
+  t.after(() => fs.rm(temp, { recursive: true, force: true }));
+  // The installed version fits here, but the previous 41-character staging name
+  // left the native compiler with a 260-character core module path.
+  const root = temp.length >= 143 ? temp : path.join(temp, 'r'.repeat(142 - temp.length));
   const archive = path.resolve(officialArchive);
   const compiler = path.join(root, '4.36.0', 'bin', 'lean.exe');
-  await Promise.all([install(root, archive), install(root, archive)]);
+  const coldInstalls = await Promise.allSettled([install(root, archive), install(root, archive)]);
+  for (const result of coldInstalls) if (result.status === 'rejected') throw result.reason;
   const { stdout } = await run(compiler, ['--version'], { windowsHide: true });
   assert.match(stdout, /Lean \(version 4\.36\.0, x86_64-w64-windows-gnu/);
   const coreModule = path.join(root, '4.36.0', 'lib', 'lean', 'Init.olean');
@@ -60,4 +64,7 @@ test('the real Windows release installs concurrently, repairs a broken compiler 
   await assert.rejects(fs.access(coreModule + '.broken'), { code: 'ENOENT' });
   await install(root, path.join(root, 'unavailable.zip'));
   assert.deepEqual((await fs.readdir(root)).sort(), ['.install.lock', '4.36.0']);
+  const tooLong = path.join(temp, 't'.repeat(Math.max(1, 180 - temp.length)));
+  await assert.rejects(install(tooLong, archive), error => /runtime path is too long/i.test(error.stderr));
+  assert.deepEqual(await fs.readdir(tooLong), ['.install.lock']);
 });
