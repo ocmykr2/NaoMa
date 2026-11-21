@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#fafaf8">
+  <title>NaoMa · Proof Reader</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="reader-math.css">
+  <script defer src="katex.min.js"></script>
+  <script defer src="reader-math.js"></script>
+  <script defer src="demo.js"></script>
+  <script defer src="pdf-reader.js"></script>
+  <script defer src="page-view.js"></script>
+  <script defer src="import.js"></script>
+  <script defer src="reading-plan.js"></script>
+  <script defer src="part-orientation.js"></script>
+  <script defer src="paper-knowledge-data.js"></script>
+  <script defer src="knowledge-state.js"></script>
+  <script defer src="knowledge-ui.js"></script>
+  <script defer src="stage-ui.js"></script>
+  <script defer src="notation-picker.js"></script>
+  <script defer src="reading-session.js"></script>
+  <script defer src="plan-diagnostics.js"></script>
+  <script defer src="overview-data.js"></script>
+  <script defer src="paper-library.js"></script>
+  <script defer src="paper-removal.js"></script>
+  <script defer src="explorer.js"></script>
+  <script defer src="app.js"></script>
+</head>
+<body data-paper-state="opening">
+  <header class="topbar">
+    <div class="wordmark"><span class="mark" aria-hidden="true">∴</span> NaoMa</div>
+    <div class="header-tools">
+      <label class="paper-picker"><span class="visually-hidden">Choose a paper</span>
+        <select id="paperPicker">
+          <option value="intervals">Interval scheduling</option>
+        </select>
+      </label>
+      <button type="button" id="removePaper" class="ghost remove-paper" aria-haspopup="dialog" hidden>Remove paper…</button>
+      <button type="button" class="control primary" id="openImport">Import paper</button>
+    </div>
+  </header>
+  <main class="workspace">
+    <section class="reading" aria-label="Proof reader">
+      <section id="paperStatePanel" class="paper-state" aria-labelledby="paperStateTitle">
+        <div id="paperStateActivity" class="preparation-progress" role="progressbar" aria-labelledby="paperStateTitle"></div>
+        <h1 id="paperStateTitle" tabindex="-1">Opening paper…</h1>
+        <p id="paperStateMessage" role="status" aria-atomic="true"></p>
+        <div id="planProgress" class="plan-progress" hidden>
+          <progress id="planPartCount" aria-label="Parts reviewed" hidden></progress>
+          <p id="planProgressDetail"></p>
+          <p id="preparationEstimate" hidden></p>
+        </div>
+        <div class="paper-state-actions">
+          <button type="button" id="retryPaper" class="control primary">Retry</button>
+          <button type="button" id="changeFailedNotation" class="control" hidden>Change notation</button>
+          <button type="button" id="viewOriginalButton" class="control primary">Open original paper</button>
+          <button type="button" id="preparePaperButton" class="control">Prepare reading guide</button>
+        </div>
+        <details id="planDiagnostics" class="plan-diagnostics" hidden>
+          <summary>Diagnostics</summary>
+          <p id="diagnosticStatus" role="status"></p>
+          <pre id="diagnosticReport" tabindex="0" aria-label="Reading plan diagnostics"></pre>
+          <div class="diagnostic-actions">
+            <button id="refreshDiagnostics" type="button" class="control">Refresh</button>
+            <button id="copyDiagnostics" type="button" class="control">Copy diagnostics</button>
+          </div>
+          <textarea id="diagnosticCopyText" aria-label="Select and copy diagnostics" rows="6" readonly hidden></textarea>
+        </details>
+      </section>
+      <section id="preflightPanel" class="preflight-panel" aria-labelledby="preflightTitle">
+        <p id="preflightPaperTitle" class="preflight-paper-title"></p>
+        <h1 id="preflightTitle" tabindex="-1">Background for this paper</h1>
+        <p class="preflight-instructions">Mark the ideas you already know. You can continue with everything unmarked.</p>
+        <div class="notation-picker">
+          <label for="notationChoice">Whose notation would you like to use?</label>
+          <select id="notationChoice"></select>
+          <div id="notationUpload" hidden>
+            <label for="notationFile">Reference paper</label>
+            <input type="file" id="notationFile" accept=".pdf,.tex,.md,.markdown,.txt">
+          </div>
+          <div id="notationPaste" hidden>
+            <label for="notationTitle">Reference title <span>(optional)</span></label>
+            <input type="text" id="notationTitle" maxlength="500">
+            <label for="notationExcerpt">Passage defining the symbols</label>
+            <textarea id="notationExcerpt" rows="4" placeholder="Paste the definitions or notation section from the reference paper."></textarea>
+          </div>
+          <p id="notationStatus" role="status" aria-live="polite"></p>
+        </div>
+        <div id="preflightKnowledge"></div>
+        <p class="preflight-empty">This paper has no background items to mark.</p>
+        <div class="preflight-actions"><button type="button" class="control primary" id="continuePreflight">Prepare my reading plan</button>
+          <button type="button" id="cancelNotation" class="ghost" hidden>Back to reading</button></div>
+      </section>
+      <nav class="explore-bar" id="exploreBar" aria-label="Paper navigation">
+        <div class="return-links">
+          <button type="button" class="ghost" id="backOverview" hidden>← Overview</button>
+          <button type="button" class="ghost" id="returnTopic" hidden>Back to discussion</button>
+        </div>
+        <details class="paper-tools"><summary>Paper tools</summary><div class="explore-tools" id="exploreTools">
+          <button type="button" class="ghost" id="sourceToggle">Original paper</button>
+          <button type="button" class="ghost" id="openRoute">Browse proof</button>
+          <button type="button" class="ghost" id="profileButton">Reading knowledge</button>
+        </div></details>
+      </nav>
+      <header class="paper-head">
+        <h1 id="paperTitle" tabindex="-1"></h1>
+      </header>
+      <section id="overviewPanel" class="overview-panel" aria-label="Explore the paper">
+        <div id="overviewBody" class="overview-prose"></div>
+        <button type="button" class="control" id="readCurrentPart" hidden>Start reading</button>
+        <div id="overviewTurns" class="overview-turns"></div>
+        <form id="overviewForm" class="overview-form">
+          <label class="visually-hidden" for="overviewText">Ask about this paper</label>
+          <textarea id="overviewText" maxlength="4000" rows="2" placeholder="What would you like to understand?"></textarea>
+          <button type="submit" id="overviewSend" class="control primary">Ask</button>
+        </form>
+        <p id="overviewStatus" role="status"></p>
+        <div id="overviewSuggestions" class="suggestion-list" aria-label="Suggested questions"></div>
+        <div id="threadDock"></div>
+      </section>
+      <article id="stageReader" class="stage-reader" aria-labelledby="stageTitle" hidden>
+        <header class="stage-heading">
+          <p class="step-meta" id="stagePosition"></p>
+          <h2 id="stageTitle" tabindex="-1"></h2>
+        </header>
+        <div class="stage-layout">
+          <div class="stage-main">
+            <div id="stageReadMode" class="stage-read-mode" role="group" aria-label="How to read this section" hidden>
+              <button id="stageModeSteps" type="button" aria-pressed="true">Step by step</button>
+              <button id="stageModeFull" type="button" aria-pressed="false">Full section</button>
+            </div>
+            <div id="stageProofNotice" class="stage-proof-notice" hidden>
+              <p id="stageProofStatus" role="status" aria-live="polite"></p>
+              <details id="stageProofDiagnostics" class="plan-diagnostics" hidden>
+                <summary>Diagnostics</summary>
+                <pre id="stageProofDiagnosticReport"></pre>
+              </details>
+              <button id="stageProofRetry" class="ghost" type="button" hidden>Try again</button>
+            </div>
+            <section id="stageProofStructure" class="stage-proof" aria-label="Step-by-step explanation" hidden>
+              <div id="stageProofIntro"></div>
+              <details id="stageProofOutline" class="proof-outline">
+                <summary>Steps in this section</summary>
+                <ol id="stageProofOutlineList"></ol>
+              </details>
+              <article class="proof-step" aria-labelledby="stageProofHeading">
+                <p id="stageProofCount" class="step-meta"></p>
+                <h3 id="stageProofHeading" tabindex="-1"></h3>
+                <div id="stageProofContent"></div>
+              </article>
+              <div id="stageProofNav" class="proof-nav" role="group" aria-label="Move between steps">
+                <button id="stageProofBack" class="ghost" type="button">Previous step</button>
+                <button id="stageProofNext" class="ghost" type="button">Next step</button>
+              </div>
+            </section>
+            <div id="stageFullSection">
+              <section id="stageOrientation" class="stage-orientation" aria-label="Introduction and mathematical statements" hidden>
+                <p id="stageIntroduction" class="stage-lead" hidden></p>
+                <div id="stageLeadIn" class="overview-prose"></div>
+                <div id="stageDefinitions" class="stage-definitions" hidden></div>
+                <section id="stageStatement" class="stage-statement" aria-labelledby="stageStatementLabel" hidden>
+                  <h3 id="stageStatementLabel"></h3>
+                  <div id="stageStatementText"></div>
+                </section>
+                <div id="stageOrientationNotice" class="stage-orientation-notice" hidden>
+                  <p id="stageOrientationStatus" role="status" aria-atomic="true" tabindex="-1"></p>
+                  <button type="button" id="stageOrientationRetry" class="ghost" hidden>Retry part notes</button>
+                </div>
+              </section>
+              <div id="stageOpening" class="overview-prose"></div>
+              <p id="stageHandoff" class="stage-handoff" hidden></p>
+              <details id="stageNotation" class="stage-notation" hidden>
+                <summary id="stageNotationTitle">Notation reference</summary>
+                <dl id="stageNotationList"></dl>
+              </details>
+            </div>
+            <div id="stagePrevious"></div>
+            <div id="stageSources" class="stage-links"></div>
+            <section id="stageIntroductions" aria-label="Introduced in this part"></section>
+          </div>
+          <aside id="stagePrerequisites" aria-label="Prerequisites for this part"></aside>
+          <section class="stage-discussion" aria-label="Discussion of this part">
+            <div id="stageTurns" class="turns"></div>
+            <section id="stageExplore" class="stage-explore" aria-label="Explore the argument" tabindex="-1" hidden>
+              <div class="stage-explore-actions" role="group" aria-label="Ways to explore this argument">
+                <button type="button" id="stageExploreExample" aria-controls="stageExploreForm" aria-expanded="false">Worked example</button>
+                <button type="button" id="stageExploreSimplify" aria-controls="stageExploreForm" aria-expanded="false">Try a simpler problem</button>
+                <button type="button" id="stageExploreRemove" aria-controls="stageExploreForm" aria-expanded="false">Remove a condition</button>
+              </div>
+              <form id="stageExploreForm" class="stage-explore-form" hidden>
+                <label for="stageExploreTarget" id="stageExploreLabel">Target (optional)</label>
+                <div id="stageExploreSuggestions" class="stage-target-suggestions" role="group" aria-label="Suggested targets"></div>
+                <textarea id="stageExploreTarget" maxlength="1000" rows="2" aria-describedby="stageExploreHint" placeholder="Write your own target…"></textarea>
+                <div class="stage-explore-footer">
+                  <p id="stageExploreHint"></p>
+                  <button type="submit" class="control primary" id="stageExploreSubmit">Explore</button>
+                </div>
+              </form>
+            </section>
+            <form id="stageAskForm" class="overview-form">
+              <label class="visually-hidden" for="stageAskText">Your response or question about this part</label>
+              <textarea id="stageAskText" maxlength="4000" rows="2" placeholder="Ask about this part…"></textarea>
+              <button type="submit" class="control primary" id="stageSend">Send</button>
+            </form>
+            <p id="stageStatus" class="stage-status" role="status" aria-atomic="true"></p>
+            <div class="stage-controls">
+              <button id="stageResume" class="control" type="button" hidden>Return to current part</button>
+              <button id="stageContinue" class="control" type="button" aria-controls="stageCheckpoint" aria-expanded="false" hidden>I understand this part</button>
+            </div>
+            <section id="stageCheckpoint" class="stage-checkpoint" aria-labelledby="stageCheckHeading" hidden>
+              <h3 id="stageCheckHeading" tabindex="-1">Optional self-check</h3>
+              <div id="stageFirstQuestion"></div>
+              <div id="stageCheckFeedback"></div>
+              <form id="stageCheckForm">
+                <label for="stageCheckText">Your answer</label>
+                <textarea id="stageCheckText" maxlength="4000" rows="2" placeholder="Try an answer in your own words…"></textarea>
+                <div class="stage-check-actions">
+                  <button type="submit" class="control primary" id="stageCheckSubmit">Check my answer</button>
+                </div>
+              </form>
+              <div class="stage-check-actions">
+                <button type="button" class="control" id="stageCheckSkip">Skip</button>
+                <button type="button" class="ghost" id="stageCheckBack">Back to reading</button>
+              </div>
+            </section>
+          </section>
+        </div>
+        <details id="stageArchive" class="stage-archive" hidden>
+          <summary>Reading history</summary>
+          <nav id="stageArchiveList" aria-label="Part discussions"></nav>
+        </details>
+      </article>
+      <article class="step-sheet" id="stepSheet" hidden>
+        <div class="step-meta" id="stepMeta"></div>
+        <h2 id="stepTitle" tabindex="-1"></h2>
+        <nav id="sourcePartLinks" class="stage-links" aria-label="Discussions of this passage"></nav>
+        <p id="summary"></p>
+        <div class="source-actions">
+          <button type="button" class="ghost" id="showSource" aria-controls="excerpt"></button>
+        </div>
+        <div id="excerpt" class="source-snippet"></div>
+        <aside id="priorWork" aria-label="Earlier work for this passage" hidden></aside>
+        <div id="inlinePage" class="page-frame" hidden></div>
+        <aside id="skillPrompt" class="knowledge-prompt" aria-label="Technique checkpoint" hidden></aside>
+        <section class="actions reader-conversation" id="conversation" aria-labelledby="discussTitle">
+          <h3 id="discussTitle" class="visually-hidden">Discuss this passage</h3>
+          <p class="route-focus" id="routeFocus" hidden></p>
+          <div id="optionList" class="option-grid"></div>
+          <button type="button" id="moreQuestions" class="ghost" aria-controls="optionList" hidden>More questions</button>
+          <div id="answer" class="answer" role="region" aria-label="Explanation" hidden></div>
+          <div id="turns" class="turns"></div>
+          <form id="askForm" class="ask-form">
+            <label class="visually-hidden" for="askText">Your question about this passage</label>
+            <textarea id="askText" rows="2" maxlength="4000" placeholder="Ask about this passage or follow up on an answer…"></textarea>
+            <button type="submit" id="askSubmit" class="control primary">Ask Codex</button>
+          </form>
+          <p id="askStatus" role="status"></p>
+          <details id="earlierQuestions" hidden>
+            <summary>Questions from other steps</summary>
+            <div id="earlierList"></div>
+          </details>
+        </section>
+        <div class="pagination" hidden>
+          <button class="control" type="button" id="previous">Previous step</button>
+          <span id="readCount"></span>
+          <button class="control" type="button" id="next">Next step</button>
+        </div>
+      </article>
+    </section>
+  </main>
+  <dialog id="navigationDialog" aria-labelledby="navTitle">
+    <div class="dialog-head"><h2 id="navTitle">Browse proof</h2><button type="button" class="ghost close-dialog">Close</button></div>
+    <nav id="roadmap" aria-label="Choose a passage"></nav>
+    <button type="button" id="routeToggle" class="ghost" hidden>View steps in source order</button>
+  </dialog>
+  <dialog id="uploadDialog" aria-labelledby="importTitle">
+    <div class="dialog-head"><h2 id="importTitle">Import paper</h2><button type="button" class="ghost close-dialog" aria-label="Close import dialog">Close</button></div>
+    <p>Choose a paper or paste a proof.</p>
+    <label class="dropzone" for="paperFile" id="fileLabel">Choose a file or drop it here
+      <small>PDF, LaTeX, Markdown or plain text</small>
+      <input type="file" id="paperFile" class="visually-hidden" accept=".pdf,.tex,.md,.markdown,.txt">
+    </label>
+    <button type="button" id="useText" class="ghost" hidden>Use pasted text instead</button>
+    <label for="paperText" id="textLabel">Source text</label>
+    <textarea id="paperText" rows="6" placeholder="Paste a theorem and its proof…"></textarea>
+    <label class="research-consent"><input type="checkbox" id="researchOnImport" checked> Use Codex to prepare the overview, techniques, and definitions</label>
+    <small>If you skip preparation, you can read the original and prepare the guide later.</small>
+    <p id="importMessage" role="status"></p>
+    <button type="button" class="primary control" id="confirmImport">Open paper</button>
+  </dialog>
+  <dialog id="removePaperDialog" aria-labelledby="removePaperHeading" aria-describedby="removePaperDescription">
+    <h2 id="removePaperHeading">Remove this paper?</h2>
+    <p id="removePaperTitle"></p>
+    <p id="removePaperDescription">This clears the saved copy, reading plans, conversations, and choices for this paper. Import it again to start a new reading. Your original file and shared technique preferences stay available.</p>
+    <p id="removePaperError" role="alert" hidden></p>
+    <div class="dialog-actions">
+      <button type="button" class="control" id="cancelRemovePaper" autofocus>Cancel</button>
+      <button type="button" class="control" id="confirmRemovePaper">Remove paper</button>
+    </div>
+  </dialog>
+  <dialog id="profileDialog" aria-labelledby="profileTitle">
+    <div class="dialog-head"><h2 id="profileTitle">Reading knowledge</h2><button type="button" class="ghost close-dialog">Close</button></div>
+    <div id="currentNotation" class="notation-settings">
+      <p><span id="notationName"></span> <button id="editNotation" type="button" class="ghost">Change notation</button></p>
+      <details id="notationKey" hidden><summary>Compare symbols with the original</summary><div id="notationMappings"></div></details>
+    </div>
+    <div id="paperKnowledge"></div>
+  </dialog>
+  <dialog id="fullDialog" aria-labelledby="originalHeading">
+    <div class="dialog-head"><h2 id="originalHeading">Full text</h2><button type="button" class="ghost close-dialog">Close</button></div>
+    <div id="pageControls" class="source-actions" hidden>
+      <button type="button" class="ghost" id="pdfPrev">Previous page</button>
+      <span id="pdfCount"></span>
+      <button type="button" class="ghost" id="pdfNext">Next page</button>
+      <a id="sourcePdf" target="_blank" rel="noopener">Open original PDF</a>
+    </div>
+    <div id="dialogPage" class="page-frame" hidden></div>
+    <pre id="fullSource" style="white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;line-height:1.85"></pre>
+  </dialog>
+  <noscript>Enable JavaScript to explore the proof and its worked examples.</noscript>
+</body>
+</html>

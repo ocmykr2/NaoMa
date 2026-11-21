@@ -1,0 +1,273 @@
+{
+  "type": "object",
+  "$defs": {
+    "sourceAnchors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {"step": {"type": "integer"}, "phrase": {"type": "string"}},
+        "required": ["step", "phrase"]
+      }
+    },
+    "selfCheck": {
+      "anyOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {"question": {"type": "string"}, "answer": {"type": "string"}},
+          "required": ["question", "answer"]
+        }
+      ]
+    }
+  },
+  "properties": {
+    "analysisStatus": {
+      "type": "string",
+      "enum": ["analyzed", "source-unavailable", "research-unavailable"]
+    },
+    "displayTitle": {"type": "string"},
+    "parts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string"},
+          "title": {"type": "string"},
+          "summary": {"type": "string"},
+          "sourceSteps": {"type": "array", "items": {"type": "integer"}},
+          "sourceAnchors": {"$ref": "#/$defs/sourceAnchors"},
+          "techniqueIds": {"type": "array", "items": {"type": "string"}},
+          "definitionGroupIds": {"type": "array", "items": {"type": "string"}},
+          "localPrerequisiteIds": {"type": "array", "items": {"type": "string"}}
+        },
+        "required": ["id", "title", "summary", "sourceSteps", "sourceAnchors", "techniqueIds", "definitionGroupIds", "localPrerequisiteIds"]
+      }
+    },
+    "localIntroductions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string"},
+          "kind": {"type": "string", "enum": ["lemma", "technique", "definition"]},
+          "title": {"type": "string"},
+          "meaning": {"type": "string"},
+          "sourceAnchors": {"$ref": "#/$defs/sourceAnchors"},
+          "originPartId": {"type": "string"}
+        },
+        "required": ["id", "kind", "title", "meaning", "originPartId", "sourceAnchors"]
+      }
+    },
+    "overview": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "paragraphs": {"type": "array", "items": {"type": "string"}},
+        "suggestions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {"question": {"type": "string"}, "step": {"type": "integer"}},
+            "required": ["question", "step"]
+          }
+        }
+      },
+      "required": ["paragraphs", "suggestions"]
+    },
+    "papers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "citeKey": {"type": "string"},
+          "title": {
+            "type": "string"
+          },
+          "authors": {
+            "type": "string"
+          },
+          "year": {
+            "type": "integer"
+          },
+          "url": {
+            "type": "string"
+          },
+          "locator": {
+            "type": "string"
+          },
+          "idea": {
+            "type": "string"
+          },
+          "connection": {
+            "type": "string"
+          },
+          "difference": {
+            "type": "string"
+          },
+          "relation": {
+            "type": "string"
+          },
+          "skills": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          },
+          "sourceAnchors": {"$ref": "#/$defs/sourceAnchors"},
+          "query": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "citeKey",
+          "title",
+          "authors",
+          "year",
+          "url",
+          "locator",
+          "idea",
+          "connection",
+          "difference",
+          "relation",
+          "skills",
+          "steps",
+          "sourceAnchors",
+          "query"
+        ]
+      }
+    },
+    "skills": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "step": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "prerequisites": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "question": {
+            "type": "string"
+          },
+          "explanation": {
+            "type": "string"
+          },
+          "knownQuestion": {
+            "type": "string"
+          },
+          "knownExplanation": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "step",
+          "name",
+          "prerequisites",
+          "question",
+          "explanation",
+          "knownQuestion",
+          "knownExplanation"
+        ]
+      }
+    },
+    "knowledge": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "techniques": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": {"type": "string"},
+              "name": {"type": "string"},
+              "mechanism": {"type": "string"},
+              "steps": {"type": "array", "items": {"type": "integer"}},
+              "knownBridge": {"type": "string"},
+              "selfCheck": {"$ref": "#/$defs/selfCheck"},
+              "folklore": {"type": "boolean"},
+              "sources": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "paperId": {"type": "string"},
+                    "role": {"type": "string", "enum": ["uses", "introduces"]},
+                    "introEvidence": {"type": "string"}
+                  },
+                  "required": ["paperId", "role", "introEvidence"]
+                }
+              }
+            },
+            "required": ["id", "name", "mechanism", "steps", "knownBridge", "selfCheck", "folklore", "sources"]
+          }
+        },
+        "definitionGroups": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": {"type": "string"},
+              "title": {"type": "string"},
+              "selfCheck": {"$ref": "#/$defs/selfCheck"},
+              "steps": {"type": "array", "items": {"type": "integer"}},
+              "definitions": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {"term": {"type": "string"}, "meaning": {"type": "string"}},
+                  "required": ["term", "meaning"]
+                }
+              }
+            },
+            "required": ["id", "title", "steps", "definitions", "selfCheck"]
+          }
+        }
+      },
+      "required": ["techniques", "definitionGroups"]
+    },
+    "reason": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "analysisStatus",
+    "displayTitle",
+    "parts",
+    "localIntroductions",
+    "overview",
+    "papers",
+    "skills",
+    "knowledge",
+    "reason"
+  ]
+}

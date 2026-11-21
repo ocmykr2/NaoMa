@@ -1,0 +1,15 @@
+.reader-math {
+  font-family: "Cambria Math", "STIX Two Math", math;
+  font-size: 1em;
+  font-weight: normal;
+  letter-spacing: normal;
+}
+
+.reader-math-display {
+  display: block;
+  max-width: 100%;
+  margin-block: .65em;
+  padding-block: .2em;
+  overflow-x: auto;
+  text-align: center;
+}

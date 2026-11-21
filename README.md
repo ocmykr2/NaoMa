@@ -1,0 +1,49 @@
+# NaoMa
+
+NaoMa is an interactive reader for mathematical papers. Import a paper, tell it which ideas you already know, and follow the argument one section at a time. If a proof step feels opaque, you can ask for a worked example, try a simpler version of the problem, or remove an assumption and see where the reasoning breaks.
+
+**[Download NaoMa for Windows x64](https://github.com/ocmykr2/NaoMa/releases/latest/download/NaoMa-Windows-x64.zip)** · [All releases](https://github.com/ocmykr2/NaoMa/releases)
+
+## Run on Windows
+
+1. Install Node.js 24 and make sure `node --version` works in a new terminal. The desktop window also uses the Microsoft Edge WebView2 Evergreen Runtime. [Node.js downloads](https://nodejs.org/en/download) · [WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/)
+2. To prepare a paper or ask questions, install the Codex CLI and sign in with your own account. Check that `codex --version` works. [Codex CLI](https://developers.openai.com/codex/cli/)
+3. For PDF import, install Poppler and put its tools on your `PATH`. NaoMa uses `pdftotext`, `pdfinfo`, and `pdftoppm`. You can also paste a proof or import a text file. [Poppler](https://poppler.freedesktop.org/)
+4. Extract the **entire** release ZIP. Open `proof-reader/start-reader.cmd` or double-click `proof-reader/desktop/Proof Reader.exe`. Keep the extracted folders together.
+
+The first window offers an interval-scheduling example. Choose **Import paper** to start with your own material.
+
+## Read a paper
+
+1. **Choose your starting point.** After the first preparation, mark familiar proof techniques and definition groups. You can leave everything unmarked. Optionally supply a reference paper or paste a passage whose notation you like.
+2. **Open the overview.** NaoMa prepares a reading plan using those choices. Familiarity shortens background explanations. The paper’s own assumptions, notation and new arguments still need to be introduced.
+3. **Explore a step.** Ask a question in your own words or use a suggested action. For example, in an exchange proof, ask “What is the smallest instance where the exchange changes the chosen schedule?” Follow a prerequisite link to revisit a definition or an earlier discussion.
+
+Preparation progress is saved locally. If a preparation stops, open **Diagnostics** to see the job ID, stage and error code. These are useful when [reporting an issue](https://github.com/ocmykr2/NaoMa/issues).
+
+## Run from source
+
+From the repository root, run the local service.
+
+```sh
+node proof-reader/server.cjs
+```
+
+Open <http://127.0.0.1:8794> in your browser. The server listens on the loopback interface. Codex handles paper preparation, literature research and answers using your signed-in account. When you opt in, the relevant paper text, page images, reference passages and questions can be sent to Codex. Your library and reading progress are stored on your device.
+
+On **macOS**, the source includes a browser-mode launch path. The Windows desktop build has been tested end to end. A native Mac app and end-to-end verification on a Mac are pending.
+
+## Optional tools
+
+- **Lean 4** checks supported local mathematical steps. On Windows, the installer in `proof-reader/desktop/install-lean.ps1` sets up the supported version. A section can also include arguments explained directly from the paper.
+- **Proof Craft** can supply the editorial guidance for the reading plan. The default installation includes NaoMa’s own editorial guidance. To use a separate Proof Craft installation, set `NAOMA_PROOF_CRAFT_DIR` to its skill directory before launching NaoMa. [Proof Craft](https://github.com/fitelson/proof-craft)
+
+## Development
+
+The application uses Node.js, a browser interface and a Windows WebView2 host. Run the test suite from the repository root.
+
+```sh
+node --test "proof-reader/*.test.cjs"
+```
+
+The Windows desktop build instructions are in the [desktop README](proof-reader/desktop/README.md). Distribution notices are included for [KaTeX](proof-reader/katex-LICENSE.txt) and [WebView2](proof-reader/desktop/WebView2-LICENSE.txt).
