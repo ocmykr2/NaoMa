@@ -748,6 +748,7 @@
     if (studyJobs.has(job)) return studyJobs.get(job);
     const current=()=>session(key).study===job;
     const endpoint="/api/reading-plan";
+    let resumeReview;
     function follow() {
       return poll(endpoint+"/"+encodeURIComponent(job.key),result=>{
         if (session(key).study!==job || (result.key && result.key!==job.key)) return;
@@ -772,7 +773,8 @@
         const [doc,notation]=await Promise.all([source(),referenceFor(job.notationReference)]);
         if (!current()) return;
         const result=await post(endpoint,{...doc,title:analysis.displayTitle || doc.title,
-          analysis:referencesFor(analysis,job.analysisKey),readerKnowledge:job.readerKnowledge,...notation});
+          analysis:referencesFor(analysis,job.analysisKey),readerKnowledge:job.readerKnowledge,...notation,
+          ...(resumeReview?{resumeReview}:{})});
         if (current()) acceptPlan(key,job,result,analysis);
       };
       const locks=window.navigator?.locks;
@@ -794,7 +796,12 @@
           if (!current()) return;
           if (result.key && result.key!==job.key) throw Object.assign(new Error("The service returned a different reading plan."),{unexpected:true,failureCode:"plan-key-mismatch"});
           if (checkBlocked && (result.expired || result.disconnected)) return;
-          if (result.expired || (!checkBlocked && result.status==="error" && legacyRepair(result))) repair=true;
+          if (result.status==="error" && result.needsAction && result.actionRequired==="review" && !result.unexpected &&
+              !job.unexpected && (!job.actionRequired || job.actionRequired==="review") &&
+              typeof result.resumeReview==="string" && result.resumeReview.startsWith(job.key+"/")) {
+            resumeReview=result.resumeReview;
+            repair=true;
+          } else if (result.expired || (!checkBlocked && result.status==="error" && legacyRepair(result))) repair=true;
           else {
             if (checkBlocked && result.status==="error") {
               if (result.needsAction || result.unexpected) acceptPlan(key,job,result,analysis);
@@ -808,7 +815,7 @@
         while (current()) {
           try {
             if (shouldSubmit) {
-              if (repair && job.repairSubmitted) throw Object.assign(new Error(job.message || "The reading service could not restore this plan after checking its saved work."),{needsAction:true,actionRequired:"service"});
+              if (repair && job.repairSubmitted && !resumeReview) throw Object.assign(new Error(job.message || "The reading service could not restore this plan after checking its saved work."),{needsAction:true,actionRequired:"service"});
               await submit(repair);
             }
             if (!current() || job.status!=="running") return;

@@ -1,4 +1,5 @@
 'use strict';
+require('./test-support/editorial-fixture.cjs');
 const test=require('node:test'),assert=require('node:assert/strict');
 const fs=require('node:fs/promises'),os=require('node:os'),path=require('node:path');
 const {createHash}=require('node:crypto');

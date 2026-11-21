@@ -31,6 +31,12 @@ The local service keeps the latest 96 events per job across restarts. An interru
 
 ## Rebuild
 
+The Windows x64 release includes its Lean runtime. To build the download from a committed revision, use Python 3.11 or later and the official `lean-4.36.0-windows.zip`. The packaging script verifies the archive and includes the compiler, libraries and license notices.
+
+```powershell
+python proof-reader/desktop/package-windows.py lean-4.36.0-windows.zip dist/NaoMa-Windows-x64.zip
+```
+
 Run `./build.ps1` in PowerShell on x64 Windows with the .NET Framework 4.x compiler. The script verifies the SHA-256 digest of the pinned Microsoft WebView2 SDK package, extracts the three runtime libraries and their notices, and builds the window and its icon. For an offline rebuild, supply the downloaded package path with `-SdkPackage`.
 
 The SDK comes from the [Microsoft WebView2 NuGet package](https://www.nuget.org/packages/Microsoft.Web.WebView2/1.0.4314.35). Its license and redistribution notices are included beside the executable.

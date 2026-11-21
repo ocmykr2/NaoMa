@@ -33,10 +33,10 @@ Open <http://127.0.0.1:8794> in your browser. The server listens on the loopback
 
 On **macOS**, the source includes a browser-mode launch path. The Windows desktop build has been tested end to end. A native Mac app and end-to-end verification on a Mac are pending.
 
-## Optional tools
+## How NaoMa prepares a proof
 
-- **Lean 4** checks supported local mathematical steps. On Windows, the installer in `proof-reader/desktop/install-lean.ps1` sets up the supported version. A section can also include arguments explained directly from the paper.
-- **Proof Craft** can supply the editorial guidance for the reading plan. The default installation includes NaoMa’s own editorial guidance. To use a separate Proof Craft installation, set `NAOMA_PROOF_CRAFT_DIR` to its skill directory before launching NaoMa. [Proof Craft](https://github.com/fitelson/proof-craft)
+- **Proof Craft** guides the model’s editorial review of each reading section. On first use, NaoMa automatically downloads a pinned version of the four guidance files from the upstream repository and verifies their checksums. Later preparations reuse the local copy. [Proof Craft](https://github.com/fitelson/proof-craft)
+- **Lean 4** runs automatically when a step has a supported formalization. The Windows x64 download includes the Lean 4.36.0 runtime. A Windows x64 checkout started from source can install the pinned runtime on first use. Browser mode on macOS or Linux can use a locally installed Lean 4. The reader shows the mathematical argument in English. This check applies to the individual steps that NaoMa formalizes. [Lean 4](https://github.com/leanprover/lean4)
 
 ## Development
 

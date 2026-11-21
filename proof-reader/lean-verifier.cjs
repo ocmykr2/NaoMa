@@ -1,4 +1,5 @@
-const {spawn} = require('node:child_process');
+const {execFile,spawn} = require('node:child_process');
+const {promisify} = require('node:util');
 const {createHash} = require('node:crypto');
 const fs = require('node:fs/promises');
 const os = require('node:os');
@@ -124,27 +125,117 @@ function compileFormalization(formal) {
     '    '+conclusion+' := by','  '+tactics[formal.tactic],'','#print axioms readingPart',''].join('\n');
 }
 
-async function findLean(explicit) {
+const execFileAsync=promisify(execFile);
+const managedRoot=()=>path.join(process.env.LOCALAPPDATA || path.join(os.homedir(),'AppData','Local'),'ProofReader','lean');
+async function* installedCandidates(override) {
   const exe=process.platform==='win32'?'lean.exe':'lean';
   const roots=process.platform==='win32'?[process.env.LOCALAPPDATA,path.join(os.homedir(),'AppData','Local')]:
     [process.env.XDG_DATA_HOME || path.join(os.homedir(),'.local','share')];
-  const override=explicit || process.env.PROOF_READER_LEAN;
-  const candidates=override?[override]:roots.filter(Boolean).map(r=>path.join(r,'ProofReader','lean',bundledVersion,'bin',exe));
-  if (!override) {
+  const managed=new Set([path.join(__dirname,'lean',bundledVersion,'bin',exe),
+    ...roots.filter(Boolean).map(r=>path.join(r,'ProofReader','lean',bundledVersion,'bin',exe))]);
+  async function* paths() {
+    if (override) {yield override;return;}
+    yield* managed;
     for (const dir of (process.env.PATH||'').split(path.delimiter)) {
-      if (path.isAbsolute(dir) && !/[\\/]\.elan[\\/]bin[\\/]?$/i.test(dir)) candidates.push(path.join(dir,exe));
+      if (path.isAbsolute(dir) && !/[\\/]\.elan[\\/]bin[\\/]?$/i.test(dir)) yield path.join(dir,exe);
     }
     const toolchains=path.join(process.env.ELAN_HOME||path.join(os.homedir(),'.elan'),'toolchains');
     try {
       const installed=await fs.readdir(toolchains);
-      for (const d of installed.filter(d=>d.startsWith('leanprover--lean4---')).sort().reverse()) candidates.push(path.join(toolchains,d,'bin',exe));
+      for (const d of installed.filter(d=>d.startsWith('leanprover--lean4---')).sort().reverse()) yield path.join(toolchains,d,'bin',exe);
     } catch { /* Elan is optional. */ }
   }
-  for (const candidate of new Set(candidates)) {
-    if (!path.isAbsolute(candidate)) continue;
-    try { if ((await fs.stat(candidate)).isFile()) return candidate; } catch { /* Next installed path. */ }
+  const seen=new Set();
+  for await (const candidate of paths()) {
+    if (!path.isAbsolute(candidate) || seen.has(candidate)) continue;
+    seen.add(candidate);
+    try {
+      const compiler=await fs.stat(candidate);
+      if (!compiler.isFile()) continue;
+      const library=await fs.stat(path.resolve(path.dirname(candidate),'../lib/lean/Init.olean')).catch(()=>null);
+      const stamp=file=>file?[file.dev,file.ino,file.size,file.mtimeMs,file.ctimeMs]:null;
+      yield {exe:candidate,pinned:!override && managed.has(candidate),fingerprint:JSON.stringify([stamp(compiler),stamp(library)])};
+    } catch { /* Next installed path. */ }
   }
-  return null;
+}
+async function installWindowsRuntime() {
+  const root=managedRoot(),script=path.join(__dirname,'desktop','install-lean.ps1');
+  const powershell=path.join(process.env.SystemRoot || 'C:\\Windows','System32','WindowsPowerShell','v1.0','powershell.exe');
+  const args=['-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',script,'-Root',root];
+  if (process.env.PROOF_READER_LEAN_ARCHIVE) args.push('-Archive',path.resolve(process.env.PROOF_READER_LEAN_ARCHIVE));
+  try {
+    await execFileAsync(powershell,args,{windowsHide:true,timeout:30*60*1000,maxBuffer:128*1024});
+  } catch (error) {
+    // Keep stable diagnostics without copying local paths or child-process commands into a receipt.
+    const log=error.stderr || '';
+    let detail='The pinned Lean runtime could not be prepared. Check the download connection, available disk space or offline archive.';
+    if (error.killed) detail='The pinned Lean installation exceeded its time limit.';
+    else if (log.includes('published SHA-256')) detail='The Lean release archive failed the pinned SHA-256 check.';
+    else if (log.includes('could not be downloaded')) detail='The official Lean release could not be downloaded.';
+    else if (log.includes('sample theorem')) detail='The installed Lean release could not verify its sample theorem.';
+    throw Object.assign(new Error(detail),{code:'LEAN_INSTALL_UNAVAILABLE'});
+  }
+  return path.join(root,bundledVersion,'bin','lean.exe');
+}
+async function healthyRuntime({exe,pinned}) {
+  // A damaged installation may print its version but lack the imported library.
+  const formal={variables:[{name:'n',type:'Nat'}],hypotheses:[],conclusion:'n+1>n',tactic:'omega'};
+  const [result]=await checkBatch(exe,[{base:{source:compileFormalization(formal)},formal}],45000);
+  return result.status==='verified' && (!pinned || result.version.startsWith('Lean (version '+bundledVersion+','));
+}
+function createLeanResolver({discover=installedCandidates,healthy=healthyRuntime,install=installWindowsRuntime,
+  supported=process.platform==='win32' && process.arch==='x64',now=Date.now}={}) {
+  const pending=new Map();
+  let retryAfter=0;
+  let failureDetail='';
+  let lastHealthy;
+  async function usable(candidate) {
+    if (candidate.fingerprint && lastHealthy?.exe===candidate.exe && lastHealthy.pinned===candidate.pinned &&
+        lastHealthy.fingerprint===candidate.fingerprint && now()<lastHealthy.expires) return true;
+    if (!(await healthy(candidate))) {
+      if (lastHealthy?.exe===candidate.exe) lastHealthy=undefined;
+      return false;
+    }
+    if (candidate.fingerprint) lastHealthy={...candidate,expires:now()+5*60000};
+    return true;
+  }
+  async function resolve(override,provision) {
+    for await (const candidate of await discover(override)) {
+      if (await usable(candidate)) return {exe:candidate.exe};
+    }
+    if (override) return {detail:'The configured Lean executable is missing or cannot check a local theorem.'};
+    if (!provision || !supported) return {detail:'No working Lean 4 runtime is available for this platform.'};
+    if (now()>=retryAfter) {
+      let exe;
+      try {
+        exe=await install();
+      } catch (error) {
+        if (error.code!=='LEAN_INSTALL_UNAVAILABLE') throw error;
+        failureDetail=error.message;
+      }
+      if (exe) {
+        let installed;
+        for await (const candidate of await discover(exe)) {
+          if (candidate.exe===exe) {installed=candidate;break;}
+        }
+        if (await usable({...installed,exe,pinned:true})) {retryAfter=0;return {exe};}
+        failureDetail='The installed Lean release did not pass the local theorem check.';
+      }
+      retryAfter=now()+60000;
+    }
+    return {detail:failureDetail};
+  }
+  const resolver=(override,provision=true)=>{
+    const key=JSON.stringify([override || null,provision]);
+    if (!pending.has(key)) pending.set(key,resolve(override,provision).finally(()=>pending.delete(key)));
+    return pending.get(key);
+  };
+  resolver.invalidate=exe=>{if (lastHealthy?.exe===exe) lastHealthy=undefined;};
+  return resolver;
+}
+const resolveLean=createLeanResolver();
+async function findLean(explicit) {
+  return (await resolveLean(explicit || process.env.PROOF_READER_LEAN,false)).exe || null;
 }
 
 function runLean(exe,args,input,cwd,timeoutMs) {
@@ -236,8 +327,9 @@ async function verifyFormalization(formal,{executable,timeoutMs=90000}={}) {
   const base={source:'',version:'',detail:'',axioms:[]};
   try { base.source=compileFormalization(formal); }
   catch (error) {return {...base,status:'unsupported',detail:error.message};}
-  const exe=await findLean(executable);
-  if (!exe) return {...base,status:'unavailable',detail:'The Lean 4 checker is not installed.'};
+  const runtime=await resolveLean(executable || process.env.PROOF_READER_LEAN);
+  if (!runtime.exe) return {...base,status:'unavailable',detail:runtime.detail};
+  const exe=runtime.exe;
   const deadline=Number.isFinite(timeoutMs)?Math.max(100,Math.min(120000,timeoutMs)):90000;
   const key=JSON.stringify([exe,deadline]);
   if (!pending.has(key)) {
@@ -248,10 +340,11 @@ async function verifyFormalization(formal,{executable,timeoutMs=90000}={}) {
       for (let start=0;start<rows.length;start+=32) {
         const group=rows.slice(start,start+32);
         const results=await checkBatch(exe,group,deadline);
+        if (results.some(result=>result.status==='unavailable' || result.status==='error')) resolveLean.invalidate(exe);
         group.forEach((row,i)=>row.resolve(results[i]));
       }
     },25);
   }
   return new Promise(resolve=>pending.get(key).push({base,formal,resolve}));
 }
-module.exports={formalSchema,formalGuidance,compileFormalization,verifyFormalization,findLean};
+module.exports={formalSchema,formalGuidance,compileFormalization,verifyFormalization,findLean,createLeanResolver};

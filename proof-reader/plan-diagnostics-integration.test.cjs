@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+require('./test-support/editorial-fixture.cjs');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
@@ -415,4 +416,42 @@ test('older unpublished checkpoints expose counts without exposing manuscript co
   assert.equal(report.progress.totalParts,7);
   assert.deepEqual(report.events,[]);
   assert.equal(JSON.stringify(report).includes('private'),false);
+});
+
+test('only an old failed subtraction review with its saved candidate offers a conditional resumption',async t=>{
+  const dir=await temporaryCache(t);
+  const {planCheckpoints}=require('./plan-checkpoints.cjs');
+  const {planDiagnostics}=require('./plan-diagnostics.cjs');
+  const {readingPlanKey}=require('./personalized-plan.cjs');
+  const key=await readingPlanKey(request), history=planCheckpoints(dir,key,100000);
+  const log=planDiagnostics(dir,key);
+  const failed={event:'failed',code:'editorial-rejected',stage:'revising-draft',firstPart:1,lastPart:1,totalParts:1};
+  const proposed={...draft(printed),title:request.analysis.parts[0].title,sourceSteps:[1],opening:section},partId=proposed.id;
+  const reason='Editorial review changed a mathematical bound without a matching source expression (j=n-1). Restore the grounded expression or its source-supported derivation.';
+  const rows=new Map([[0,{grounded:[proposed],reviewed:[],editNotes:[{id:partId,reason,proposal:editorRow(proposed)}]}]]);
+  const api=client(dir,()=>assert.fail('a read-only check or stale submission started generation'));
+  await log.record(failed);
+  await assert.rejects(api.get(key),{status:404});
+  await history.save(rows);
+  const offer=await api.get(key);
+  assert.equal(offer.actionRequired,'review');assert.equal(offer.resumeReview,key+'/1');
+  assert.ok(!JSON.stringify(offer).includes('j=n-1'));
+  await log.record({...failed,code:'quota'});
+  await assert.rejects(api.get(key),{status:404});
+  await log.record({...failed,boundCheckVersion:2});
+  await assert.rejects(api.get(key),{status:404});
+  const stale=await api.post({...request,resumeReview:offer.resumeReview});
+  assert.equal(stale.status,'error');assert.equal(stale.resumeReview,undefined);
+  await log.record(failed);
+  const available=await api.get(key);
+  assert.notEqual(available.resumeReview,offer.resumeReview);
+  // A second client still holding the first offer sees the latest state
+  // without starting a second review.
+  assert.deepEqual(await api.post({...request,resumeReview:offer.resumeReview}),available);
+  const fixed=client(dir,()=>assert.fail('a valid saved candidate should pass replay without another model call'));
+  const submissions=await Promise.all([1,2].map(()=>fixed.post({...request,resumeReview:available.resumeReview})));
+  const ready=await fixed.finished(submissions[0]);
+  assert.equal(ready.status,'ready',ready.message);assert.equal(ready.key,key);
+  assert.equal((await fixed.post({...request,resumeReview:available.resumeReview})).status,'ready');
+  assert.equal((await fixed.diagnostics(key)).events.filter(e=>e.event==='resumed').length,1);
 });

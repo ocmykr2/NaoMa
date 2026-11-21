@@ -525,6 +525,22 @@ test('two windows repair an older notation failure once using the exact saved re
   }
 });
 
+test('an updated bound checker reopens its saved review once with the original profile',async()=>{
+  const old={key:'old-bound',status:'error',needsAction:true,actionRequired:'review',
+    message:'The saved section needs another pass.'};
+  const local=storage(),first=app(async()=>old,local);
+  await first.plan(marked,analysis);
+  const cold=app(async({method,body})=>{
+    if (method==='GET') return {...old,resumeReview:old.key+'/12'};
+    assert.equal(body.resumeReview,'old-bound/12');
+    assert.deepEqual(body.readerKnowledge,clean(marked));
+    return readyPlan(old.key);
+  },local);
+  await Promise.all([cold.api.resumeStudy(key,source,analysis),cold.api.resumeStudy(key,source,analysis)]);
+  assert.equal(cold.study().status,'ready');
+  assert.deepEqual(cold.calls.map(c=>c.method),['GET','POST']);
+});
+
 test('reopening after losing contact follows an existing job that is still preparing',async()=>{
   const local=storage();
   const first=app(async({method})=>method==='POST'?{status:'running',key:'still-working'}:{httpStatus:503,error:'Offline'},local);

@@ -27,21 +27,7 @@ const version = 'personalized-parts-6-inline-notation';
 const orientationVersion = 'orientation-only-4-inline-notation';
 const adaptedPlanVersion=version+'-'+notationRevision;
 const adaptedOrientationVersion=orientationVersion+'-'+notationRevision;
-async function editorialSkill() {
-  const upstream=process.env.NAOMA_PROOF_CRAFT_DIR;
-  const name=upstream?'proof-craft':'math-exposition';
-  const directory=upstream || path.join(__dirname,'skills',name);
-  const skillFiles=upstream?['SKILL.md','REFERENCE.md','references/halmos-exposition.md','references/finite-reductions.md']:['SKILL.md'];
-  try {
-    const files=await Promise.all(skillFiles.map(async filename=>({name:filename,
-      text:await fs.readFile(path.join(directory,filename),'utf8')})));
-    const hash=createHash('sha256');
-    for (const file of files) hash.update(file.name).update('\0').update(file.text.replace(/\r\n/gu,'\n')).update('\0');
-    if (!editorialRevision || files.some(file=>!file.text.trim())) throw new Error('Missing editorial guidance.');
-    return {name,files,digest:hash.digest('hex')};
-  } catch { throw fail(503,upstream?'Check the Proof Craft directory in NAOMA_PROOF_CRAFT_DIR. Its skill and reference files must be readable.':
-    'The bundled math-exposition skill is unavailable. Restore the skill from the NaoMa distribution.'); }
-}
+const {loadEditorialSkill:editorialSkill}=require('./proof-craft.cjs');
 const partLimit = 128;
 const cacheLimit = 128*1024*1024;
 function workerProblem(error) {
@@ -898,6 +884,18 @@ const editedFields={id:stringField,introduction:stringField,paragraphs:{type:'ar
   sourceCheck:stringField,unresolved:stringField,definitionCorrections:{type:'array',items:correctionSchema}};
 const editorSchema={type:'object',additionalProperties:false,required:['parts'],properties:{parts:{type:'array',
   items:{type:'object',additionalProperties:false,required:Object.keys(editedFields),properties:editedFields}}}};
+// The reviewer receives an immutable draft in this pass. It cannot author
+// replacement prose, alter a condition, or certify a corrected card.
+const boundAuditFields={id:stringField,supported:{type:'boolean'},sourceStep:{type:'integer'},sourceQuote:stringField,
+  originalBound:stringField,sourceCheck:stringField,unresolved:stringField,formalAfter:editedFields.formalAfter,
+  notationEvidence:editedFields.notationEvidence};
+const boundAuditSchema={type:'object',additionalProperties:false,required:['parts'],properties:{parts:{type:'array',
+  items:{type:'object',additionalProperties:false,required:Object.keys(boundAuditFields),properties:boundAuditFields}}}};
+function printedBounds(text) {
+  // Bare PDF text can put the entire expression on its own line. An equation
+  // prefix inside a longer inequality is never a witness for the shorter one.
+  return new Set([...formulas(text),...text.split(/\r?\n/u).map(line=>displayedText(line.trim().replace(/[.,;]$/u,'')).replace(/\s+/gu,''))]);
+}
 function labels(text) {
   return new Set((text.replace(/~/gu,' ').match(/\b(?:Theorem|Lemma|Corollary|Proposition|Claim|Definition)\s+(?:[A-Z]\.)?\d+(?:\.\d+)*\b/giu)||[])
     .map(s=>s.toLowerCase().replace(/\s+/gu,' ')));
@@ -905,6 +903,28 @@ function labels(text) {
 function formulas(text) {
   return [...text.matchAll(/\\\(([\s\S]*?)\\\)|\\\[([\s\S]*?)\\\]/gu)].map(m=>
     displayedText(m[1]??m[2]).replace(/\\(?:left|right)\b|\s+/gu,''));
+}
+function printedExpression(formula,passages) {
+  // PDF text uses the mathematical minus glyph; TeX math uses ASCII minus.
+  // Match complete tokens within one assigned passage so 1 cannot match 10,
+  // and a matching prefix cannot hide the rest of an arithmetic expression.
+  const tokens=/\\[A-Za-z]+|\d+(?:\.\d+)?|\.\d+|\p{L}+|[^\s]/gu;
+  const expected=formula.replaceAll('−','-').match(tokens);
+  if (!expected?.length) return false;
+  const continuation=/^[-+*/^_=<>≤≥≠×⋅]$/u;
+  const alphanumeric=/^[\p{L}\d]/u;
+  return passages.some(passage=>{
+    const words=[...passage.matchAll(tokens)];
+    for (let i=0;i+expected.length<=words.length;i++) {
+      if (words[i][0]!==expected[0] || !expected.every((token,j)=>words[i+j][0]===token)) continue;
+      const end=i+expected.length, before=words[i-1],after=words[end];
+      if ((before && continuation.test(before[0])) || (after && continuation.test(after[0]))) continue;
+      const attached=(left,right)=>left && right && left.index+left[0].length===right.index &&
+        alphanumeric.test(left[0]) && alphanumeric.test(right[0]);
+      if (!attached(before,words[i]) && !attached(words[end-1],after)) return true;
+    }
+    return false;
+  });
 }
 function integerProductEquation(formula) {
   // In a closed numeric calculation, only the factors to the left of the
@@ -1214,7 +1234,7 @@ function recoverEditorMath(edit,part) {
   }
   return revised;
 }
-function reviewEdit(edit,part,brief,{citations,paperMath,paperDecimalProducts},names,edition) {
+function reviewEdit(edit,part,brief,{citations,sourceMath,paperDecimalProducts},names,edition) {
   const draft=part.orientation;
   if (!nonempty(edit.sourceCheck,2000) || edit.sourceCheck.trim().length<12 ||
       typeof edit.unresolved!=='string' || edit.unresolved.trim()) {
@@ -1251,7 +1271,7 @@ function reviewEdit(edit,part,brief,{citations,paperMath,paperDecimalProducts},n
   if (unsupported) {
     throw new Error('Editorial review introduced an unsupported numbered result ('+unsupported+').');
   }
-  const previous=formulas([draft.introduction,...draft.paragraphs,draft.handoff].join('\n'));
+  const previous=formulas([draft.introduction,...draft.paragraphs,draft.handoff].join('\n')).map(s=>s.replaceAll('−','-'));
   // Exposition can name the two endpoints of a previously printed interval one
   // at a time. The superscript signs are part of their names. Keep comparisons
   // and expressions involving either endpoint in the ordinary bound check.
@@ -1265,15 +1285,20 @@ function reviewEdit(edit,part,brief,{citations,paperMath,paperDecimalProducts},n
   const grounded=new Set([...previous,...products]);
   const skeleton=s=>s.replace(/\d+(?:\.\d+)?|[≤≥<>=+\u2212-]/gu,'#');
   const shapes=new Set([...grounded].filter(s=>/[\d≤≥<>=+\u2212-]/u.test(s)).map(skeleton));
-  for (const formula of formulas(text)) {
+  const selectedSources=brief.parts.find(p=>p.id===part.id).sourceSteps.map(step=>sourceMath[step-1]);
+  for (const formula of formulas(text).map(s=>s.replaceAll('−','-'))) {
     const product=integerProductEquation(formula),candidate=product || formula;
     const comparesBound=shapes.has(skeleton(candidate)) || (product && productResults.has(rightSide(product)));
-    if (comparesBound && !grounded.has(candidate) && !paperMath.includes(formula) && !listedEndpoint(formula) &&
+    if (comparesBound && !grounded.has(candidate) && !printedExpression(formula,selectedSources) && !listedEndpoint(formula) &&
         !groundedDecimalExample(formula,prose,paperDecimalProducts)) {
       const advice=/^\d*\.\d+$/u.test(formula)?
         ' For a worked substitution, write one sentence of the form “At [variable = input], the expression [source coefficient × variable] equals [result]”, with each bracketed quantity in a separate LaTeX span. If the calculation cannot be established, restore the grounded expression.':
         ' Restore the grounded expression or its source-supported derivation.';
-      throw new Error('Editorial review changed a mathematical bound without a matching source expression ('+formula.slice(0,400)+').'+advice);
+      const error=new Error('Editorial review changed a mathematical bound without a matching source expression ('+formula.slice(0,400)+').'+advice);
+      error.unsupportedBound=formula;
+      error.groundedAlternatives=previous.filter(s=>skeleton(s)===skeleton(formula) ||
+        (product && integerProductEquation(s) && rightSide(integerProductEquation(s))===rightSide(product))).slice(0,8);
+      throw error;
     }
   }
   const beforeBoxes=[section.introduction,...section.paragraphs.slice(0,section.formalAfter || 0)];
@@ -1363,7 +1388,8 @@ async function editBatch({parts,brief,units,source,context,skill,directory,worke
       proposals=parts.map(p=>byId.get(p.id));
     } else proposals=await requestProposals(prompt);
     const material=units.map(u=>u.text).join('\n');
-    const evidence={citations:labels(material),paperMath:displayedText(material).replace(/\s+/gu,''),paperDecimalProducts:decimalScales(material)};
+    const evidence={citations:labels(material),sourceMath:units.map(u=>displayedText(u.text).replaceAll('−','-')),
+      paperDecimalProducts:decimalScales(material)};
     async function check(part,edit) {
       if (edit?.id!==part.id) throw new Error('Editorial review needs a separate entry with the assigned ID '+part.id+'.');
       const changes=edit?.definitionCorrections ?? [],definitions=[...part.orientation.definitions];
@@ -1387,6 +1413,39 @@ async function editBatch({parts,brief,units,source,context,skill,directory,worke
       }
       return reviewEdit(edit,{...part,orientation:{...part.orientation,definitions}},brief,evidence,eligible.get(part.id),context.notationEdition);
     }
+    async function auditGroundedBound(part,finding) {
+      const assigned=brief.parts.find(row=>row.id===part.id).sourceSteps.map(step=>units[step-1]);
+      const printed=assigned.map(unit=>printedBounds(unit.text));
+      const alternatives=finding.groundedAlternatives.filter(bound=>printed.some(expressions=>expressions.has(bound)));
+      if (!alternatives.length) return null;
+      const auditPrompt=[prompt,
+        'Review the unedited grounded section specified below as an alternative to a rejected change of bound. Read the original source. Independently check the original draft in full, including the condition, variables, signs, strictness and conclusion in each case. If removing the rejected change leaves a gap, changes the scope, or the original section itself needs any changes to be sound and readable, set supported false and explain the exact unresolved issue. Only accept when the entire existing introduction, paragraphs, handoff and boxes can be published verbatim. Supply the source step and a uniquely locatable exact passage with the applicable candidate expression. Cite a complete delimited or separately printed equation including its surrounding source wording. In originalBound return the corresponding exact string from alternatives. In sourceCheck explain why the original comparison applies in this branch. Audit first-use notation for the unchanged draft. Return only the single review under the supplied schema.',
+        'Section and prior validation finding (data): '+JSON.stringify({id:part.id,rejected:finding.unsupportedBound,alternatives})].join('\n\n');
+      await fs.writeFile(schemaPath,JSON.stringify(boundAuditSchema));
+      let decisions;
+      try {decisions=await requestProposals(auditPrompt);}
+      finally {await fs.writeFile(schemaPath,JSON.stringify(editorSchema));}
+      const decision=decisions.find(row=>row?.id===part.id);
+      if (decision?.supported!==true || decision.unresolved!=='' || !alternatives.includes(decision.originalBound) ||
+          !nonempty(decision.sourceQuote,2400) || !nonempty(decision.sourceCheck,2000) ||
+          !Array.isArray(decision.notationEvidence)) return null;
+      const unit=assigned.find(row=>row.step===decision.sourceStep);
+      if (!unit) return null;
+      const quote=decision.sourceQuote.trim(),at=unit.text.indexOf(quote);
+      if(at<0 || at!==unit.text.lastIndexOf(quote) ||
+          (quote.replace(/\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\]/gu,' ').match(/\p{L}{2,}/gu)||[]).length<2) return null;
+      // An undelimited PDF equation needs its complete original line inside
+      // the quote. A substring ending in x<=1 cannot certify x<=10.
+      const lines=quote.split('\n'),end=at+quote.length;
+      if(at>0 && unit.text[at-1]!=='\n')lines.shift();
+      if(end<unit.text.length && unit.text[end]!=='\n' && unit.text[end]!=='\r')lines.pop();
+      if(!formulas(quote).includes(decision.originalBound) && !printedBounds(lines.join('\n')).has(decision.originalBound))return null;
+      const draft=part.orientation;
+      const retained={id:part.id,introduction:draft.introduction,paragraphs:draft.paragraphs,handoff:draft.handoff,
+        referenceNotation:null,definitionCorrections:[],proseNotationCards:[],unresolved:'',
+        formalAfter:decision.formalAfter,sourceCheck:decision.sourceCheck,notationEvidence:decision.notationEvidence};
+      return check(part,retained);
+    }
     const issues=[],reviewed=new Map();
     for (const [i,part] of parts.entries()) {
       if (saved && !proposals[i]) continue;
@@ -1396,9 +1455,24 @@ async function editBatch({parts,brief,units,source,context,skill,directory,worke
       catch (error) {
         if (preparationIssue(error).reason!=='editorial-rejected') throw error;
         const note={id:part.id,reason:error.message,notation:!!error.notation,proposal};
-        issues.push(note);
-        await onReviewed([],[note]);
-        continue;
+        const prior=notes.find(n=>n.id===part.id);
+        if (error.unsupportedBound && error.groundedAlternatives?.length) {
+          note.unsupportedBound=error.unsupportedBound;
+          note.boundAuditAttempted=!!prior?.boundAuditAttempted;
+          if (correcting && prior?.unsupportedBound && !note.boundAuditAttempted) {
+            note.boundAuditAttempted=true;
+            try {accepted=await auditGroundedBound(part,error);}
+            catch (auditError) {
+              if (preparationIssue(auditError).reason!=='editorial-rejected') throw auditError;
+              note.reason=auditError.message;
+            }
+          }
+        }
+        if (!accepted) {
+          issues.push(note);
+          await onReviewed([],[note]);
+          continue;
+        }
       }
       reviewed.set(part.id,accepted);
       await onReviewed([accepted]);
@@ -1806,15 +1880,29 @@ function createPlanHandler({worker:run,readLocalJson,checkLocalRequest,renderSou
   const activeLogs=new WeakMap();
   const retries=new Map();
   const file=k=>path.join(cacheDir,k+'.json');
-  async function savedUnexpected(key) {
+  async function savedFailure(key) {
     // The terminal event is durable and contains only projected diagnostic
     // fields. An ordinary GET after a restart must not convert a bug into a
     // missing job and prompt another automatic generation.
     const trace=await planDiagnostics(cacheDir,key).read();
     const last=trace?.events.at(-1);
-    if(last?.event!=='failed' || last.code!=='unexpected-failure')return null;
+    if(last?.event!=='failed')return null;
     const {stage,firstPart,lastPart,completedParts,draftedParts,totalParts,at:updatedAt}=last;
-    return unexpectedPlanFailure(key,{stage,firstPart,lastPart,completedParts,draftedParts,totalParts,updatedAt,...dependencyCounts(last)});
+    const progress={stage,firstPart,lastPart,completedParts,draftedParts,totalParts,updatedAt,...dependencyCounts(last)};
+    if(last.code==='unexpected-failure')return unexpectedPlanFailure(key,progress);
+    if(last.code!=='editorial-rejected' || last.boundCheckVersion || stage!=='revising-draft' ||
+        !firstPart || firstPart!==lastPart)return null;
+    const history=await planCheckpoints(cacheDir,key,cacheLimit).load();
+    const row=history.get(firstPart-1);
+    const id=row?.grounded?.[0]?.id;
+    if(typeof id!=='string' || !Array.isArray(row.editNotes))return null;
+    const note=row.editNotes.find(n=>n?.id===id && n.proposal?.id===id);
+    // Only offer to reconsider an actual saved mathematical subtraction
+    // rejected by the older comparator. The new check must still accept it.
+    if(!/^Editorial review changed a mathematical bound without a matching source expression \([^\n]*[-−][^\n]*\)\./u.test(note?.reason || ''))return null;
+    return {key,status:'error',needsAction:true,actionRequired:'review',progress,
+      message:'The saved mathematical expression can be reviewed again with the updated source check.',
+      resumeReview:key+'/'+last.sequence};
   }
   paperCache?.adapter('plan',{busy:key=>running.has(key),async remove(key) {
     for (const suffix of ['.json','.checkpoint','.diagnostics']) await fs.rm(path.join(cacheDir,key+suffix),{force:true});
@@ -2047,7 +2135,7 @@ function createPlanHandler({worker:run,readLocalJson,checkLocalRequest,renderSou
       const issue=preparationIssue(e,progress.stage);
       const code=issue.unexpected?'unexpected-failure':cause?.workerCode || (problem==='timeout'?'timeout':e.sourceDefinitions?.length?'definition-evidence':
         /editorial review/iu.test(e.message)?'editorial-rejected':'generation-failed');
-      await diagnose({event:'failed',code,check:cause || problem?'worker':e.sourceDefinitions?.length?'definition':undefined,
+      await diagnose({event:'failed',code,...(code==='editorial-rejected'?{boundCheckVersion:2}:{}),check:cause || problem?'worker':e.sourceDefinitions?.length?'definition':undefined,
         draftedParts:progress.draftedParts,...dependencyCounts(progress)});
       const actionRequired=issue.block || (issue.reason==='definition-evidence'?'source':
         ['network','timeout','empty'].includes(issue.reason)?'service':'review');
@@ -2056,10 +2144,17 @@ function createPlanHandler({worker:run,readLocalJson,checkLocalRequest,renderSou
         {key,status:'error',message,needsAction:true,actionRequired,progress});
     } finally { running.delete(key); }
   }
-  async function submit(input,skill,key,generation) {
+  async function submit(input,skill,key,generation,resumeReview) {
       input.cacheGeneration=generation;
       let result=await cached(key);
       if (!result) {
+        if(resumeReview!==undefined && !running.has(key)){
+          const stopped=failures.get(key)||await savedFailure(key);
+          if(!running.has(key) && (!stopped?.resumeReview || stopped.resumeReview!==resumeReview)){
+            return stopped || await cached(key) || {key,status:'error',needsAction:true,actionRequired:'review',
+              message:'The saved review changed. Open the latest plan status before retrying.'};
+          }
+        }
         if (!running.has(key)) {
           if (running.size>=3) throw fail(429,'Three plans are already being prepared. Retry when one finishes.');
           const now=Date.now(),history=retries.get(key);
@@ -2079,11 +2174,11 @@ function createPlanHandler({worker:run,readLocalJson,checkLocalRequest,renderSou
     checkLocalRequest(req);
     let result;
     if (route===endpoint && req.method==='POST') {
-      const input=normalize(await readLocalJson(req,32*1024*1024+cacheLimit));
+      const body=await readLocalJson(req,32*1024*1024+cacheLimit),input=normalize(body);
       const skill=await editorialSkill();
       const key=contentHash(input,input.mode==='orientation'?orientationVersion:version,input.existingOpenings,skill);
-      result=paperCache ? await paperCache.submit('plan',input,key,(id,generation)=>submit(input,skill,id,generation)) :
-        await submit(input,skill,key);
+      result=paperCache ? await paperCache.submit('plan',input,key,(id,generation)=>submit(input,skill,id,generation,body.resumeReview)) :
+        await submit(input,skill,key,undefined,body.resumeReview);
     } else if (req.method==='GET' && /^\/api\/reading-plan\/[a-f0-9]{64}\/diagnostics$/u.test(route)) {
       const key=route.split('/')[3],job=running.get(key);
       const trace=await (activeLogs.get(job) || planDiagnostics(cacheDir,key)).read();
@@ -2104,7 +2199,7 @@ function createPlanHandler({worker:run,readLocalJson,checkLocalRequest,renderSou
       }
     } else if (req.method==='GET' && /^\/api\/reading-plan\/[a-f0-9]{64}$/.test(route)) {
       const key=route.slice(endpoint.length+1);
-      result=running.get(key)||await cached(key)||failures.get(key)||await savedUnexpected(key);
+      result=running.get(key)||await cached(key)||failures.get(key)||await savedFailure(key);
       result=running.get(key)||result;
       if (!result) throw fail(404,'The plan job expired. Resume preparation from the saved paper.');
     } else { throw fail(405,'Use POST for a new plan or GET for a pending plan.'); }

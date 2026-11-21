@@ -47,7 +47,10 @@ function project(input) {
     const value = input[name];
     if (integer(value, name === 'completedParts' || name === 'draftedParts' ? 0 : 1) && value <= 100000) out[name] = value;
   }
-  if (input.event==='failed') Object.assign(out,dependencyCounts({...input,totalParts:out.totalParts}));
+  if (input.event==='failed') {
+    Object.assign(out,dependencyCounts({...input,totalParts:out.totalParts}));
+    if (input.code==='editorial-rejected' && input.boundCheckVersion===2) out.boundCheckVersion=2;
+  }
   return out;
 }
 

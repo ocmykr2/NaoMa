@@ -5,6 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const {setTimeout: delay} = require('node:timers/promises');
 const test = require('node:test');
+const editorialFixture = require('./test-support/editorial-fixture.cjs');
 const {createPlanHandler} = require('./personalized-plan.cjs');
 const {prepareRequest} = require('./ask-paper.cjs');
 const {editorialRevision} = require('./part-orientation.js');
@@ -727,12 +728,11 @@ test('a reader-installed editorial skill is staged for the worker and gets a dis
   await Promise.all(names.map((filename,i)=>fs.writeFile(path.join(root,filename),contents[i])));
   const previous=process.env.NAOMA_PROOF_CRAFT_DIR;
   t.after(()=>{if(previous===undefined)delete process.env.NAOMA_PROOF_CRAFT_DIR;else process.env.NAOMA_PROOF_CRAFT_DIR=previous;});
-  delete process.env.NAOMA_PROOF_CRAFT_DIR;
   const {readingPlanKey}=require('./personalized-plan.cjs');
-  const bundled=await readingPlanKey(requestBody);
+  const baseline=await readingPlanKey(requestBody);
   process.env.NAOMA_PROOF_CRAFT_DIR=root;
   const customized=await readingPlanKey(requestBody);
-  assert.notEqual(customized,bundled);
+  assert.notEqual(customized,baseline);
   const api=client(dir,({outputPath})=>fs.writeFile(outputPath,JSON.stringify({parts:authored})),undefined,async(job,input)=>{
     assert.ok(job.prompt.includes('proof-craft'));
     for (const [i,name] of names.entries()) {
@@ -760,10 +760,9 @@ test('every newly generated batch is edited against the original paper before it
   const question='Why does the endpoint contribute once?';
   const skillFiles=[];
   const hash=createHash('sha256');
-  for (const name of ['SKILL.md']) {
-    const relative=path.join('skills','math-exposition',name);
-    const contents=await fs.readFile(path.join(__dirname,relative),'utf8');
-    assert.ok(contents.trim().length>200,name);
+  for (const name of editorialFixture.names) {
+    const relative=path.join('skills','proof-craft',name);
+    const contents=await fs.readFile(path.join(editorialFixture.directory,name),'utf8');
     skillFiles.push({relative,contents});
     hash.update(name).update('\0').update(contents.replace(/\r\n/g,'\n')).update('\0');
   }
@@ -781,7 +780,7 @@ test('every newly generated batch is edited against the original paper before it
     sequence.push(['edit',ids]);
     assert.equal(path.basename(job.schemaPath),'editor-schema.json');
     assert.equal(job.webSearch,false);
-    assert.match(job.prompt,/math-exposition/i);
+    assert.match(job.prompt,/proof-craft/i);
     for (const {relative,contents} of skillFiles) {
       assert.equal(await fs.readFile(path.join(job.directory,relative),'utf8'),contents,relative);
       assert.ok(job.prompt.includes(contents),relative+' must be available to the editor in full');
@@ -845,7 +844,7 @@ test('large editorial batches split between whole sections and keep every draft,
   assert.ok(JSON.stringify(drafts.get('oversized')).length>96000);
   const body={title:'Three pairing cases',units,readerKnowledge:{techniques:[],definitionGroups:[]},
     analysis:{preparationVersion:2,displayTitle:'Three pairing cases',parts,localIntroductions:[],knowledge:{techniques:[],definitionGroups:[]}}};
-  const guidance=[await fs.readFile(path.join(__dirname,'skills','math-exposition','SKILL.md'),'utf8')];
+  const guidance=await Promise.all(editorialFixture.names.map(name=>fs.readFile(path.join(editorialFixture.directory,name),'utf8')));
   const groundGroups=[],reviews=[];
   const api=client(cacheDir,async ({directory,outputPath})=>{
     const batch=JSON.parse(await fs.readFile(path.join(directory,'batch.json'),'utf8'));
@@ -1151,8 +1150,8 @@ test('a previous Proof Craft edition gets contextual prose before its verified l
     known:[],readPapers:[],stepSkills:[],question:'Prepare the ordered parts of this paper.'});
   const prior='personalized-parts-5-proof-craft',revision='proof-craft-46f6f6b1-v1';
   const hash=createHash('sha256');
-  for (const filename of ['SKILL.md']) {
-    const content=await fs.readFile(path.join(__dirname,'skills','math-exposition',filename),'utf8');
+  for (const filename of editorialFixture.names) {
+    const content=await fs.readFile(path.join(editorialFixture.directory,filename),'utf8');
     hash.update(filename).update('\0').update(content.replace(/\r\n/gu,'\n')).update('\0');
   }
   const digest=hash.digest('hex');
@@ -2020,6 +2019,34 @@ test('review verifies worked decimal substitutions without waiving an unrelated 
     assert.equal(ready.status,'ready',ready.error);
     assert.equal(ready.parts[1].orientation.paragraphs.at(-1),valid);
     assert.equal(repairs,index===0?1:2);
+  }
+});
+
+test('a printed minus sign grounds a distinct boundary case only for the complete expression in the assigned passage',async t=>{
+  const body=structuredClone(requestBody),draft=structuredClone(authored);
+  const introduction='A row of tiles has length \\(n\\). Number its positions from zero and write \\(i\\) for the selected position.';
+  const inside='There is another tile to the right when \\(i<n-1\\).';
+  const boundary='At the final tile, \\(i=n-1\\), the row ends.';
+  Object.assign(draft[1].orientation,{introduction,paragraphs:[inside],notation:[
+    {symbol:'\\(n\\)',meaning:'The number of tiles in the row.'},{symbol:'\\(i\\)',meaning:'The tile position.'}]});
+  const unit=body.units[1].text;
+  // An equation on a different page may concern a different indexing scheme.
+  body.units[0].text+=' For the other row, i=n-1.';
+  let attempts=0;
+  const api=client(await cache(t),job=>fs.writeFile(job.outputPath,JSON.stringify({parts:draft})),undefined,
+    async (_job,input)=>asEditorialRows(input.parts.map(p=>{
+      if (p.id!=='total') return p;
+      attempts++;
+      return {...p,orientation:{...p.orientation,paragraphs:attempts===1?[inside,boundary]:[inside]}};
+    })));
+  for (const printed of ['i = n − 1','i = n − 10','i < n − 1','i = n + 1','i = n − 1 + 4','i = n − 1.5','vi = n − 1']) {
+    body.units[1].text=unit+' The endpoint satisfies '+printed+'.';
+    attempts=0;
+    const result=await api.finish(await api.post(body));
+    assert.equal(result.status,'ready',result.message);
+    const supported=printed==='i = n − 1';
+    assert.deepEqual(result.parts[1].orientation.paragraphs,supported?[inside,boundary]:[inside],printed);
+    assert.equal(attempts,supported?1:2,printed);
   }
 });
 
