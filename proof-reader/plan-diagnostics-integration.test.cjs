@@ -54,8 +54,8 @@ async function temporaryCache(t) {
   return dir;
 }
 
-function client(cacheDir, worker, selectWorker) {
-  const handle = createPlanHandler({cacheDir,worker,selectWorker,readLocalJson: async req => req.body,checkLocalRequest() {}});
+function client(cacheDir, worker, selectWorker, renderSourcePage) {
+  const handle = createPlanHandler({cacheDir,worker,selectWorker,renderSourcePage,readLocalJson: async req => req.body,checkLocalRequest() {}});
   async function send(method, route, body) {
     let status, value;
     await handle({method,body},{
@@ -585,6 +585,47 @@ test('recovery locates a rejected part inside its saved batch and leaves accepte
   assert.equal(unknown.actionRequired,'review');assert.equal(unknown.resumeReview,undefined);
 });
 
+test('a saved bound candidate can use the new page check once when the original PDF is available',async t=>{
+  const dir=await temporaryCache(t);
+  const {readingPlanKey}=require('./personalized-plan.cjs');
+  const {planCheckpoints}=require('./plan-checkpoints.cjs');
+  const {planDiagnostics}=require('./plan-diagnostics.cjs');
+  const api=client(dir,()=>assert.fail('A saved source-backed candidate should pass the replay'),undefined,
+    async()=>Buffer.from('original test page'));
+  const body={...request,pdfBase64:Buffer.from('%PDF-1.4\nSynthetic test paper').toString('base64')};
+  const part={...draft(printed),title:request.analysis.parts[0].title,sourceSteps:[1],opening:section};
+  part.orientation.paragraphs=['Each undirected edge contributes \\(2\\) endpoints.'];
+  const note={id:part.id,unsupportedBound:'2',proposal:editorRow(part),
+    reason:'Editorial review changed a mathematical bound without a matching source expression (2). Restore the grounded expression or its source-supported derivation.'};
+  const failed={event:'failed',code:'editorial-rejected',stage:'revising-draft',firstPart:1,lastPart:1,totalParts:1,boundCheckVersion:5};
+  async function seed(input) {
+    const key=await readingPlanKey(input),history=planCheckpoints(dir,key,100000),log=planDiagnostics(dir,key);
+    const save=(g=part,n=note)=>history.save(new Map([[0,{grounded:[g],reviewed:[],editNotes:[n]}]]));
+    await save(); await log.record(failed);
+    return {key,save,log};
+  }
+  const {key,save,log}=await seed(body);
+  assert.equal((await client(dir,()=>assert.fail('GET started a worker')).get(key)).resumeReview,undefined);
+  await save(part,{...note,unsupportedBound:'4'});
+  assert.equal((await api.get(key)).resumeReview,undefined);
+  await save({...part,sourceSteps:[]});
+  assert.equal((await api.get(key)).resumeReview,undefined);
+  await save(); await log.record({...failed,boundCheckVersion:6});
+  assert.equal((await api.get(key)).resumeReview,undefined);
+  await log.record(failed);
+  const offer=await api.get(key);
+  assert.ok(offer.resumeReview);
+  const ready=await api.finished(await api.post({...body,resumeReview:offer.resumeReview}));
+  assert.equal(ready.status,'ready',ready.message);
+  // The saved state of a text import looks identical on GET. A text-only
+  // submission cannot start a PDF review or consume a generation attempt.
+  const text=await seed(request),possible=await api.get(text.key);
+  assert.ok(possible.resumeReview);
+  const paused=await api.post({...request,resumeReview:possible.resumeReview});
+  assert.equal(paused.status,'error');assert.equal(paused.resumeReview,undefined);
+  assert.deepEqual((await api.diagnostics(text.key)).events.map(e=>e.event),['failed']);
+});
+
 test('only a locally resolved first-use spelling failure can reopen an older paused notation review',async t=>{
   const dir=await temporaryCache(t);
   const {planCheckpoints}=require('./plan-checkpoints.cjs');
@@ -627,9 +668,9 @@ test('a v4 formatting checkpoint resumes only when the named field is repaired a
     [{...proposal,paragraphs:[fixed]},reason,part],
     [proposal,reason.replace('paragraph 1','introduction'),part],
     [proposal,reason,ambiguous],
-    [{...proposal,paragraphs:[damaged,'Another **heading**.']},reason,part],
+    [{...proposal,paragraphs:[damaged,'Another <span>heading</span>.']},reason,part],
     [{...proposal,notationEvidence:['A dangling delimiter \\)']},reason,part],
-    [{...proposal,definitionCorrections:[{name:'A label',text:'A **label**.',intuition:''}]},reason,part],
+    [{...proposal,definitionCorrections:[{name:'A label',text:'A <span>label</span>.',intuition:''}]},reason,part],
   ]){
     await save(edit,why,grounded);
     const paused=await api.get(key);
@@ -646,6 +687,82 @@ test('a v4 formatting checkpoint resumes only when the named field is repaired a
   const ready=await api.finished(await api.post({...request,resumeReview:offer.resumeReview}));
   assert.equal(ready.status,'ready',ready.message);
   assert.deepEqual(ready.parts[0].orientation.paragraphs,[fixed]);
+});
+
+test('a v5 formatting failure resumes when the complete saved section needs only emphasis and math delimiters repaired',async t=>{
+  const dir=await temporaryCache(t),key=await require('./personalized-plan.cjs').readingPlanKey(request);
+  const history=require('./plan-checkpoints.cjs').planCheckpoints(dir,key,100000);
+  const log=require('./plan-diagnostics.cjs').planDiagnostics(dir,key);
+  const part={...draft(printed),title:request.analysis.parts[0].title,sourceSteps:[1],opening:section};
+  const clean='The unmatched vertex contributes \\(1\\) endpoint.';
+  part.orientation.paragraphs=[clean];
+  const note={id:part.id,proposal:{...editorRow(part),paragraphs:['The **unmatched vertex** contributes $1$ endpoint.']},
+    reason:'Editorial review returned unsupported formatting in paragraph 1. Use plain English prose and properly delimited LaTeX in that field.'};
+  await history.save(new Map([[0,{grounded:[part],editNotes:[note]}]]));
+  const failure={event:'failed',code:'editorial-rejected',stage:'revising-draft',firstPart:1,lastPart:1,totalParts:1,boundCheckVersion:6};
+  await log.record(failure);
+  const api=client(dir,()=>assert.fail('Correcting the saved presentation should be local'));
+  assert.equal((await api.get(key)).resumeReview,undefined);
+  await log.record({...failure,boundCheckVersion:5});
+  const offer=await api.get(key);assert.ok(offer.resumeReview);
+  const ready=await api.finished(await api.post({...request,resumeReview:offer.resumeReview}));
+  assert.equal(ready.status,'ready',ready.message);
+  assert.deepEqual(ready.parts[0].orientation.paragraphs,[clean]);
+});
+
+test('a damaged comparison in an edit can reopen review of the clean original only for the matching PDF',async t=>{
+  const dir=await temporaryCache(t);
+  const original={...draft(printed),title:request.analysis.parts[0].title,sourceSteps:[1],opening:section};
+  const edited={...editorRow(original),paragraphs:['At the marked vertex the degree is \\(d\u0000<4\\).']};
+  const note={id:original.id,proposal:edited,reason:'Editorial review returned unsupported formatting in paragraph 1. Detected control at character 37.'};
+  const failed={event:'failed',code:'editorial-rejected',stage:'revising-draft',firstPart:1,lastPart:1,totalParts:1,boundCheckVersion:5};
+  const api=client(dir,()=>assert.fail('Checking an old failure started a worker'),undefined,()=>assert.fail('GET rendered a page'));
+  const body={...request,pdfBase64:Buffer.from('%PDF-1.4\nSynthetic annotated graph').toString('base64')};
+  const setup=async input=>{
+    const key=await require('./personalized-plan.cjs').readingPlanKey(input);
+    const log=require('./plan-diagnostics.cjs').planDiagnostics(dir,key);
+    const history=require('./plan-checkpoints.cjs').planCheckpoints(dir,key,100000);
+    const save=(part=original,finding=note)=>history.save(new Map([[0,{grounded:[part],editNotes:[finding]}]]));
+    await save();await log.record(failed);
+    return {key,log,save};
+  };
+  const {key,save,log}=await setup(body);
+  for(const [grounded,finding] of [
+    [original,{...note,originalDraftIssue:'The source does not support this conclusion.'}],
+    [{...original,orientation:{...original.orientation,introduction:'Another damaged \\(d\u0000<4\\) comparison.'}},note],
+    [original,{...note,proposal:{...edited,paragraphs:['The edit contains \\(\\href{bad}{x}\\).']}}],
+    [original,{...note,proposal:{...edited,unresolved:'The inequality requires a different hypothesis.'}}],
+  ]){
+    await save(grounded,finding);
+    assert.equal((await api.get(key)).resumeReview,undefined);
+  }
+  await save();assert.ok((await api.get(key)).resumeReview);
+  await log.record({...failed,boundCheckVersion:6});assert.equal((await api.get(key)).resumeReview,undefined);
+  const text=await setup(request);
+  const possible=await api.get(text.key);
+  assert.ok(possible.resumeReview);
+  assert.equal((await api.post({...request,resumeReview:possible.resumeReview})).resumeReview,undefined);
+  assert.equal((await api.diagnostics(text.key)).events.length,1);
+});
+
+test('old checkpoints distinguish a newly repairable chain link from a previously repairable whole formula',async t=>{
+  const dir=await temporaryCache(t),key=await require('./personalized-plan.cjs').readingPlanKey(request);
+  const part={...draft(printed),title:request.analysis.parts[0].title,sourceSteps:[1],opening:section};
+  const chain='\\(2<3<4\\)';
+  const note={id:part.id,reason:'Editorial review returned unsupported formatting in paragraph 1. Detected control at character 17.',
+    proposal:{...editorRow(part),paragraphs:['The counts satisfy \\(2<3\u0000<4\\).']}};
+  const history=require('./plan-checkpoints.cjs').planCheckpoints(dir,key,100000);
+  const save=paragraph=>{part.orientation.paragraphs=[paragraph];return history.save(new Map([[0,{grounded:[part],editNotes:[note]}]]));};
+  const log=require('./plan-diagnostics.cjs').planDiagnostics(dir,key);
+  const failure={event:'failed',code:'editorial-rejected',stage:'revising-draft',firstPart:1,lastPart:1,totalParts:1,boundCheckVersion:5};
+  await log.record(failure);
+  const api=client(dir,()=>assert.fail('Checking an old comparison invoked a worker'));
+  await save('The three counts satisfy '+chain+'.');
+  assert.equal((await api.get(key)).resumeReview,undefined);
+  await save('The first two counts satisfy \\(2<3\\) and the last two satisfy \\(3<4\\).');
+  assert.ok((await api.get(key)).resumeReview);
+  await log.record({...failure,boundCheckVersion:6});
+  assert.equal((await api.get(key)).resumeReview,undefined);
 });
 
 test('finishing a verified section restores recovery capacity for a later independent failure',async t=>{

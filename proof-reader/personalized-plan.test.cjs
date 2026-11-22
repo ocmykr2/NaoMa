@@ -1001,6 +1001,47 @@ test('an incomplete or unresolved editorial review cannot publish the draft and 
   }
 });
 
+test('prose typography normalizes on the first draft and review while a changed exponent still fails',async t=>{
+  const dir=await cache(t),body=structuredClone(requestBody),rows=structuredClone(authored);
+  const paragraph='Compare the scale \\(2^{-4}\\) with the payment range of $5 to $10.';
+  body.units[1].text+=' '+paragraph;
+  rows[1].orientation.paragraphs=['Compare the **scale** $2^{-4}$ with the payment range of $5 to $10.'];
+  const externalCalls=[];
+  let exponent=-4;
+  const api=client(dir,async ({outputPath})=>{
+    externalCalls.push(path.basename(outputPath));
+    assert.equal(path.basename(outputPath),'plan.json');
+    await fs.writeFile(outputPath,JSON.stringify({parts:rows}));
+  },undefined,async (_job,input)=>{
+    externalCalls.push('review');
+    const edited=asEditorialRows(input.parts);
+    const total=edited.find(p=>p.id==='total');
+    if (total) {
+      assert.deepEqual(total.paragraphs,[paragraph]);
+      total.paragraphs=['Compare the scale $2^{'+exponent+'}$ with the _payment range_ of $5 to $10.'];
+      total.handoff='Keep the __pair contribution__ visible. The scale is $$2^{'+exponent+'}$$.';
+    }
+    const first=edited.find(p=>p.id==='pairing');
+    if(first){
+      const emphasize=s=>s.replace('endpoint \\(e\\)','**endpoint** $e$');
+      first.paragraphs=first.paragraphs.map(emphasize);
+      first.notationEvidence=first.notationEvidence.map(emphasize);
+    }
+    return edited;
+  });
+  const ready=await api.finish(await api.post(body));
+  assert.equal(ready.status,'ready',ready.message);
+  assert.deepEqual(externalCalls,['plan.json','review']);
+  assert.deepEqual(ready.parts[1].orientation.paragraphs,[paragraph]);
+  assert.equal(ready.parts[1].orientation.handoff,'Keep the pair contribution visible. The scale is \\[2^{-4}\\].');
+  assert.deepEqual(ready.parts[0].orientation.paragraphs,authored[0].orientation.paragraphs);
+  exponent=-5;
+  body.analysis.revision='verify changed scale';
+  const failed=await api.finish(await api.post(body));
+  assert.equal(failed.status,'error');
+  assert.match(failed.message,/changed a mathematical bound/iu);
+});
+
 test('a worker disconnect during review retries the same grounded section and retains its recovery message',async t=>{
   const cacheDir=await cache(t),body=structuredClone(requestBody);
   let attempts=0,disconnect=true,groundings=0;
