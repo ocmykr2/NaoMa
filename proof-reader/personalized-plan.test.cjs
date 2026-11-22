@@ -1453,6 +1453,61 @@ test('PDF definitions with re-typeset mathematics require independent page evide
   }
 });
 
+test('a verified PDF definition receipt is reusable only for the same claim, locator, part and page',async t=>{
+  const body=structuredClone(requestBody),rows=structuredClone(authored),dir=await cache(t);
+  const anchor='Read the marked radius from the following display.';
+  body.pdfBase64=Buffer.from('%PDF-1.7\nRadius fixture\n%%EOF').toString('base64');
+  body.units[1].text+='\n'+anchor;
+  const card={name:'Marked radius',text:'The marked radius equals \\(2^{3}\\).',intuition:'',dependsOn:[],
+    sourceStep:2,sourceQuote:'Read the marked radius \\(d_{i}\\) from the display.'};
+  rows[1].orientation.definitions=[card];
+  const claim={kind:'Lemma',label:'Lemma 4',text:'The marked radius is at least \\(1\\).',sourceStep:2};
+  claim.sourceQuote=claim.label+'. '+claim.text;
+  body.units[1].text+='\n'+claim.sourceQuote;
+  const initial=structuredClone(rows);initial[1].orientation.statement=claim;
+  const render=async()=>Buffer.from('radius drawing');
+  let originalChecks=0;
+  const first=client(dir,async job=>{
+    const file=path.basename(job.outputPath);
+    if(file==='verification.json')throw Error('The Codex account reached a usage limit.');
+    if(file!=='definition-grounding.json')return fs.writeFile(job.outputPath,JSON.stringify({parts:initial}));
+    const [item]=JSON.parse(job.prompt.split('\n\n').at(-1));
+    originalChecks++;
+    return fs.writeFile(job.outputPath,JSON.stringify({checks:[{id:item.id,anchor,verified:true,sourceDefinition:card.text,
+      comparison:'The printed display has the same base, exponent, and marked radius.'}]}));
+  },render);
+  const interrupted=await first.finish(await first.post(body));
+  assert.equal(interrupted.status,'error');assert.equal(originalChecks,1);
+  const {planCheckpoints}=require('./plan-checkpoints.cjs');
+  const original=await planCheckpoints(dir,interrupted.key,1e7).load();
+  const receipt=original.get(0).sourceChecks.find(c=>c.kind==='definition' && c.name===card.name);
+  assert.equal(receipt.verified,true);
+  const alias={...card,text:card.text.replace('2^{3}','2^3'),sourceQuote:card.sourceQuote.replace('d_{i}','d_i')};
+  const legacy={...receipt};delete legacy.claimKey;delete legacy.locatorKey;
+  for(const [name,saved,candidate,expected] of [
+    ['equivalent claim and locator',receipt,alias,0],
+    ['changed exponent',receipt,{...alias,text:alias.text.replace('2^3','2^4')},1],
+    ['changed locator',receipt,{...alias,sourceQuote:alias.sourceQuote.replace('d_i','d_j')},1],
+    ['different part',{...receipt,part:'pairing'},alias,1],
+    ['different page',{...receipt,page:99},alias,1],
+    ['different step',{...receipt,sourceStep:1},alias,1],
+    ['anchor absent',{...receipt,sourceAnchor:'The missing radius caption.'},alias,1],
+    ['legacy exact fingerprint',legacy,card,0],
+    ['legacy receipt without equivalent-claim evidence',legacy,alias,1],
+  ]){
+    const working=await cache(t),draft=structuredClone(rows);
+    draft[1].orientation.definitions=[candidate];
+    await planCheckpoints(working,interrupted.key,1e7).save(new Map([[0,{drafts:draft,sourceChecks:[saved]}]]));
+    let calls=0;
+    const cold=client(working,async job=>{
+      assert.equal(path.basename(job.outputPath),'definition-grounding.json');
+      calls++;throw Error('The Codex account reached a usage limit.');
+    },render);
+    const result=await cold.finish(await cold.post(body));
+    assert.equal(calls,expected,name);assert.equal(result.status,expected?'error':'ready',name+' '+(result.message||''));
+  }
+});
+
 test('a rejected grouped definition cannot pass by changing its locator and can be split across original pages',async t=>{
   const dir=await cache(t),body=structuredClone(requestBody);
   body.pdfBase64=Buffer.from('%PDF-1.7\nmass definitions\n%%EOF').toString('base64');
@@ -1542,12 +1597,13 @@ test('same-page locator churn moves to source-first recovery and stronger eviden
   const first='The provisional load is the sum of the linear coefficients.';
   const second='The final load is the sum of the constant coefficients.';
   body.units[1].text+='\n'+first+'\n'+second;
-  const original={name:'Final load',text:second,sourceStep:2,sourceQuote:'The provisional load is \\(L\\).',intuition:'',dependsOn:[]};
+  const original={name:'Final load',text:second,sourceStep:2,sourceQuote:'The provisional load is \\(L\\).',intuition:'Compare with \\(2^{3}\\).',dependsOn:[]};
   draft[1].orientation.definitions=[original];
   for (const paraphrase of [false,true]) {
     const order=[],anchors=[];
     let calls=0;
-    const proposal={...original,sourceQuote:first,text:paraphrase?'Sum the constant coefficients to obtain the final load.':'The final load is the sum of the  constant coefficients.'};
+    const proposal={...original,sourceQuote:first,intuition:'Compare with \\(2^3\\).',
+      text:paraphrase?'Sum the constant coefficients to obtain the final load.':'The final load is the sum of the  constant coefficients.'};
     const api=client(await cache(t),async job=>{
       const file=path.basename(job.outputPath);
       let output;
@@ -1828,10 +1884,11 @@ test('the editor can restore a defining clause from the paper without turning a 
   const cacheDir=await cache(t);
   const body=structuredClone(requestBody);
   const defining='A heavy endpoint is a fixed point whose weight is at least 8.';
+  const scaled='A heavy endpoint is a fixed point whose weight equals \\(R\\).';
   const sufficient='Every fixed point of weight at least 16 is a heavy endpoint.';
   const proposition={kind:'Proposition',label:'Proposition 3',text:'A heavy endpoint has weight at least 8.'};
   const declaration=proposition.label+'. '+proposition.text;
-  body.units[1].text+='\n'+defining+' '+sufficient+'\n'+declaration;
+  body.units[1].text+='\n'+defining+' '+sufficient+'\n'+scaled+'\n'+declaration;
   const mistaken={name:'Heavy endpoint',text:'A fixed point whose weight is at least 16.',intuition:'Such points pass the test.',
     sourceStep:2,sourceQuote:sufficient,dependsOn:['Fixed point']};
   const corrected={name:mistaken.name,text:defining,intuition:'The threshold determines which fixed points qualify.'};
@@ -1859,6 +1916,8 @@ test('the editor can restore a defining clause from the paper without turning a 
     {...corrected,name:'An invented class',sourceStep:2,sourceQuote:defining},
     {...corrected,text:'A fixed point whose weight is at least 42.',sourceStep:2,sourceQuote:defining},
     {...corrected,text:sufficient,sourceStep:2,sourceQuote:sufficient},
+    {...corrected,text:'A heavy endpoint is a fixed point',sourceStep:2,sourceQuote:defining},
+    {...corrected,text:scaled.replace('R','r'),sourceStep:2,sourceQuote:scaled},
   ]) {
     correction=invalid;
     const rejected=await api.finish(await api.post(body));
@@ -2160,6 +2219,10 @@ test('a formal statement needs its own declaration and actual claim in an assign
   const declared={...statement,sourceStep:1,sourceQuote:source.units[0].text};
   const condition=' This conclusion holds only when the number of points is odd.';
   const conditionalClaim={...statement,text:claim+condition};
+  const lengthClaim='The path has length \\(2^{3}\\) after the final turn.';
+  const lengthVariant=lengthClaim.replace('2^{3}','2^3');
+  const lengthStatement={...statement,text:lengthVariant};
+  const lengthQuote='Lemma 2.1. '+lengthVariant;
   let candidates=[];
   const api=client(cacheDir,async ({outputPath})=>{
     const parts=authored.map((part,i)=>({...part,orientation:{...part.orientation,statement:candidates[i]}}));
@@ -2167,6 +2230,10 @@ test('a formal statement needs its own declaration and actual claim in an assign
   });
   const cases=[
     {first:declared,second:declared,expected:statement,reason:'the second part does not contain original source unit 1'},
+    {first:{...lengthStatement,sourceStep:1,sourceQuote:lengthQuote},second:null,
+      firstUnit:'Lemma 2.1. '+lengthClaim,expected:lengthStatement,reason:'different brace spellings identify the same declared quantity'},
+    {first:{...lengthStatement,text:lengthVariant.replace('2^3','2^4'),sourceStep:1,sourceQuote:lengthQuote},second:null,
+      firstUnit:'Lemma 2.1. '+lengthClaim,expected:null,reason:'a different exponent changes the declared quantity'},
     {first:statement,second:null,expected:null,reason:'the model supplied no supporting excerpt'},
     {first:{...declared,sourceQuote:'Lemma 2.1. Every imaginable map fixes the endpoint.'},second:null,
       expected:null,reason:'the excerpt is absent from the source'},
@@ -2192,7 +2259,7 @@ test('a formal statement needs its own declaration and actual claim in an assign
     const units=example.firstUnit?[{...source.units[0],text:example.firstUnit},source.units[1]]:source.units;
     const body={...requestBody,units,analysis:{...analysis,revision:'evidence-'+index}};
     const job=await api.finish(await api.post(body));
-    assert.equal(job.status,'ready',example.reason);
+    assert.equal(job.status,'ready',example.reason+' '+(job.message||job.error||''));
     assert.deepEqual(job.parts.map(p=>p.orientation.statement),[example.expected,null],example.reason);
     assert.doesNotMatch(JSON.stringify(job),/sourceQuote|sourceStep"/);
     assert.deepEqual((await api.get(job.key)).parts,job.parts);
@@ -2250,6 +2317,8 @@ test('an independent visual transcription verifies statements on raster-only and
   const changedPowers=formatted.replace('3v','3v^{2}').replace('3/v','3/v^{3}');
   const swappedPowers=formatted.replace('3v','3v^{3}').replace('3/v','3/v^{2}');
   const changedGrouping=formatted.replace('3/v','3v');
+  const natural=formatted.replace('3v','3\\ln u');
+  const naturalAlias=formatted.replace('3v','3\\operatorname{ln}(u)');
   const paraphrase=formatted.replace('a rectangle has height','the rectangle has height')
     .replace('Its area exceeds','Its area is greater than');
   const cases=[
@@ -2261,6 +2330,8 @@ test('an independent visual transcription verifies statements on raster-only and
     {source:label+'. '+wrongPower,quote:wrongPower,candidate:wrongPower,transcription:formatted,verdict:false,accept:false},
     {source:damaged,candidate:changedPowers,transcription:swappedPowers,verdict:true,accept:false},
     {source:damaged,candidate:changedGrouping,transcription:formatted,verdict:true,accept:false},
+    {source:damaged,candidate:natural,transcription:naturalAlias,verdict:true,accept:true},
+    {source:damaged,candidate:natural,transcription:naturalAlias.replace('{ln}','{log}'),verdict:true,accept:false},
     {source:damaged,candidate:paraphrase,transcription:formatted,verdict:true,accept:true},
   ];
   for (const [index,c] of cases.entries()) {

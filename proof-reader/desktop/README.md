@@ -18,7 +18,11 @@ Select a paper in the picker, click **Remove paper…**, and confirm its title. 
 
 Open **Diagnostics** on the waiting or failure screen. Click **Refresh** for the latest events, or **Copy diagnostics** to include the report in a bug report. Use the part number, page, field and check code to locate the problem. The report contains operational metadata and an opaque job key.
 
-When an edit changes a mathematical bound, Naoma compares the complete expression with the assigned source and requests a correction if the change lacks support. If the edit still fails, Naoma can independently review the original draft against a quoted passage. **verify-bound** marks that source check. **restore-grounded-draft** means the original draft passed review and preparation continued. Reopening an affected older plan lets the updated checker review the saved section.
+Naoma checks the first use of a symbol against the sentence where the reader sees it. Equivalent spellings such as `x_i` and `x_{i}` can match locally. When a damaged formula has one unambiguous match in the supplied evidence, Naoma can restore its original spelling.
+
+When an edit changes a mathematical bound, Naoma checks the complete expression against the assigned source. An unsupported change triggers a targeted correction. If that correction still fails, **verify-bound** records an independent check of the original draft. **repair-bound-citation** records a corrective attempt when that check returned an unusable citation. **restore-grounded-draft** means the original draft passed review and preparation continued.
+
+Replaying a saved edit and checking its source are separate from asking the editor to rewrite it. Diagnostics count a corrective editorial call once. Reopening a plan paused by an older spelling check lets the updated checker reassess the saved section.
 
 If a definition still lacks a verified source, the reader saves that part and continues reviewing independent parts. The progress report lists the parts with outstanding source checks and those waiting for a prerequisite. **Retry** resumes from the saved work. The complete plan opens after every part passes review.
 

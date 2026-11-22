@@ -496,17 +496,34 @@ test('scheduling headings do not mix local rules with familiar background or dup
 test('preparation discards unsupported source phrases and accepts nullable review checks', async t => {
   const cacheDir = await cacheFor(t);
   const analyzed = schedulingResult();
+  const printed='Each task contributes \\(p_{j}\\) units of work.';
+  const units=schedulingSource.units.map((unit,i)=>i===1?{...unit,text:unit.text+' '+printed}:unit);
   analyzed.parts[1].sourceAnchors = [...analyzed.parts[0].sourceAnchors];
   analyzed.parts[2].sourceAnchors = [{step:2,phrase:'This quotation was never printed.'}];
   analyzed.localIntroductions[0].sourceAnchors = [{step:2,phrase:'This argument does not use dispatch marks.'}];
   analyzed.knowledge.definitionGroups[0].selfCheck = null;
+  analyzed.parts[3].sourceAnchors=[{step:2,phrase:printed.replace('p_{j}','p_j')}];
   const handle = createPaperAgentHandler({cacheDir,runner:async ({outputPath}) => fs.writeFile(outputPath,JSON.stringify(analyzed))});
-  const ready = await finish(handle,schedulingSource);
+  const ready = await finish(handle,{units});
   assert.equal(ready.status,'ready');
   assert(ready.parts.slice(0,3).every(p => !p.sourceAnchors));
   assert.equal(ready.localIntroductions[0].sourceAnchors,undefined);
   assert.equal(ready.knowledge.definitionGroups[0].selfCheck,undefined);
-  assert.deepEqual(ready.parts[3],analyzed.parts[3]);
+  assert.deepEqual(ready.parts[3],{...analyzed.parts[3],sourceAnchors:[{step:2,phrase:printed}]});
+});
+
+test('a research anchor must identify one whole-token occurrence even when one spelling matches exactly',async t=>{
+  const cacheDir=await cacheFor(t),analyzed=schedulingResult();
+  const first='This job has weight 1';
+  const second='Write the index as \\(b_i\\).';
+  const units=schedulingSource.units.map((unit,i)=>i===0?{...unit,text:unit.text+' '+first+'0. '+second+' '+second.replace('b_i','b_{i}')}:unit);
+  analyzed.parts[0].sourceAnchors=[{step:1,phrase:first}];
+  analyzed.parts[1].sourceAnchors=[{step:1,phrase:second}];
+  const handle=createPaperAgentHandler({cacheDir,runner:async ({outputPath})=>fs.writeFile(outputPath,JSON.stringify(analyzed))});
+  const ready=await finish(handle,{units});
+  assert.equal(ready.status,'ready');
+  assert.equal(ready.parts[0].sourceAnchors,undefined);
+  assert.equal(ready.parts[1].sourceAnchors,undefined);
 });
 
 test('mixed headings, duplicate background terms and unusable self-checks fail fresh validation', async t => {

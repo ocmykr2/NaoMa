@@ -75,6 +75,25 @@ test('a source-correspondence mismatch cannot publish a formally checked claim a
   assert.throws(()=>explainLeanStructure(checked,{...explanations,modules:explanations.modules.toReversed()}));
 });
 
+test('a section quotation is recovered from the assigned passage before another formulation is requested',async()=>{
+  const original='The twig length \\(d_i\\) is at most two.';
+  const proposal='The twig  length \\(d_{i}\\) is at most two.';
+  const twigInput={...input,units:[{...input.units[0],text:original}]};
+  const twigStructure={goal:'Measure the twig.',modules:[{...open,sourceQuote:proposal}]};
+  const calls=[];
+  const result=await generateLeanReading(twigInput,{worker:async({schemaPath,outputPath})=>{
+    const phase=path.basename(schemaPath).split('-')[0];calls.push(phase);
+    const value=phase==='formulation'?twigStructure:{...explanations,modules:[explanations.modules[0]]};
+    await fs.writeFile(outputPath,JSON.stringify(value));
+  }});
+  assert.deepEqual(calls,['formulation','explanation']);
+  assert.equal(result.modules[0].sourceQuote,original);
+  for(const [text,sourceQuote] of [[original,proposal.replace('{i}','{j}')],[original+' '+original,proposal]]){
+    await assert.rejects(checkLeanStructure({...twigInput,units:[{...twigInput.units[0],text}]},
+      {...twigStructure,modules:[{...open,sourceQuote}]},{}),{workerCode:'locator'});
+  }
+});
+
 test('a checked but misrepresented claim and its dependent step are rebuilt from the original passage before publication',async()=>{
   for(const persistentMismatch of [false,true]){
     const conclusions=[], review=[];

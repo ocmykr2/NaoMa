@@ -3,6 +3,7 @@ const path = require('node:path');
 const os = require('node:os');
 const {sourceForPrompt,knowledgeForPrompt,markupIssue} = require('./ask-paper.cjs');
 const {notationForPrompt,notationIssue} = require('./notation-adaptation.cjs');
+const {createEvidenceIndex} = require('./prose-evidence.cjs');
 const {runPlanWorker} = require('./paper-agent.cjs');
 
 const leanReadingRevision = 'lean-proof-structure-1';
@@ -11,7 +12,6 @@ const strings = {type:'array',items:string};
 const object = properties => ({type:'object',properties,required:Object.keys(properties),additionalProperties:false});
 const array = items => ({type:'array',items});
 const skillPath = path.join(__dirname,'skills','lean-proof-structure','SKILL.md');
-const textOnly = s=>s.normalize('NFC').replace(/\s+/gu,' ').trim();
 const idPattern=/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/u;
 const processProse=/\b(?:Lean(?:\s*4)?|proof assistant|theorem prover|kernel[- ]check\w*|type[- ]check\w*|machine[- ](?:check|verif)\w*|formaliz(?:e[ds]?|ation|ing)|formalisation|formal verifier|compiler(?: output)?|verification receipt|tactic script)\b/iu;
 const invalidStructure=(message,workerCode='format')=>Object.assign(new Error(message),{workerCode});
@@ -76,6 +76,7 @@ function normalizeStructure(input,draft,visualSteps) {
   const rows=list(draft.modules,10,'argument steps');
   if (!rows.length) throw invalidStructure('The argument needs at least one source-grounded step.');
   const previous=new Set(),earlierParts=new Set((stage.localPrerequisites||[]).map(r=>r.originPartId));
+  const passages=new Map();
   const modules=rows.map((row,index)=>{
     if (typeof row?.id!=='string' || !idPattern.test(row.id)) throw invalidStructure('Use a short ASCII identifier for each step, e.g. count-jobs. Use letters, digits, dots, underscores or hyphens, with no spaces.');
     if (previous.has(row.id)) throw invalidStructure('Each argument step must have a different identifier. '+row.id+' is repeated.');
@@ -84,11 +85,13 @@ function normalizeStructure(input,draft,visualSteps) {
     const unit=input.units[row.sourceStep-1];
     if (!Number.isInteger(row.sourceStep) || !stage.sourceSteps.includes(row.sourceStep) || !unit) throw invalidStructure('Select an original source unit assigned to this section.','locator');
     if (typeof row.sourceQuote!=='string' || row.sourceQuote.length>500) throw invalidStructure('Supply a short original source locator.','locator');
-    const quote=textOnly(row.sourceQuote);
-    const original=textOnly(unit.text||'');
+    let quote=row.sourceQuote.trim();
     if (quote) {
-      if (quote.length<8 || !/[\p{L}\p{N}]/u.test(quote) || !original.includes(quote))
-        throw invalidStructure('Use a contiguous phrase copied from the original source at step '+row.sourceStep+'.','locator');
+      if (!passages.has(row.sourceStep)) passages.set(row.sourceStep,createEvidenceIndex(unit.text||''));
+      const match=passages.get(row.sourceStep).locate(quote);
+      if (!match || match.text.length>500 || quote.replace(/\s+/gu,' ').length<8 || !/[\p{L}\p{N}]/u.test(quote))
+        throw invalidStructure('Use a unique contiguous phrase copied from the original source at step '+row.sourceStep+'.','locator');
+      quote=match.text;
     } else if (!unit.page || !visualSteps.has(row.sourceStep)) throw invalidStructure('This argument step needs a source phrase or an inspected original page.','locator');
     const field=key=>['modules',index,key];
     const assumptions=list(row.assumptions,16,'premises').map((s,i)=>prose(s,'a premise of '+row.id,600,[...field('assumptions'),i]));

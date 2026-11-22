@@ -1,14 +1,13 @@
 const fs=require('node:fs/promises');
 const os=require('node:os');
 const path=require('node:path');
-const {renderToString}=require('./katex.min.js');
+const {locatePassageQuote}=require('./prose-evidence.cjs');
 const {workerFailureCode}=require('./worker-failure.cjs');
 
 const notationRevision='paper-notation-1';
 const skillPath=path.join(__dirname,'skills','adapt-paper-notation','SKILL.md');
 const MiB=1024*1024;
 const fail=(message,status=400)=>Object.assign(new Error(message),{status,notationValidation:true});
-const clean=s=>s.normalize('NFC').replace(/\s+/gu,' ').trim();
 function field(value,limit,label){
   if(typeof value!=='string'||!value.trim()||value.length>limit) throw fail('Check '+label+'.');
   return value.trim();
@@ -48,51 +47,28 @@ function symbol(value){
   const tex=field(value,120,'the notation symbols');
   if(/[\x00-\x1f<>$%#&]|\\(?:[()[\]]|def\b|gdef\b|let\b|(?:re)?newcommand\b|providecommand\b|href\b|url\b|includegraphics\b|html\w*|begin\b|end\b|tag\b)/u.test(tex))throw fail('Use an ordinary mathematical symbol in bare LaTeX.');
   if(!mathCache.has(tex)){
-    let key;
-    try {
-      const math=renderToString(tex,{output:'mathml',strict:'error',throwOnError:true,trust:false,maxExpand:100,maxSize:10});
-      key=math.match(/<semantics>(.*?)<annotation /u)?.[1];
-    } catch { /* Give the writer an actionable validation error. */ }
-    if(!key)throw fail('Use renderable LaTeX for each notation symbol.');
+    const layout=mathLayout(tex,key=>key).whole;
+    if(!layout.length)throw fail('Use renderable LaTeX for each notation symbol.');
     if(mathCache.size>=1024) mathCache.clear();
-    mathCache.set(tex,key);
+    mathCache.set(tex,JSON.stringify(layout));
   }
   return tex;
 }
 function symbolKey(tex){symbol(tex);return mathCache.get(tex);}
-function printedLocator(quote,source){
-  // Extraction can leave a gap before a typeset comma or semicolon. Keep the
-  // actual source substring. Every other token and word boundary must agree.
-  if(!/[,;]/u.test(quote))return null;
-  const pieces=quote.split(/( *[,;]|\s+)/u);
-  const pattern=pieces.map(piece=>{
-    if(/^[ ]*[,;]$/u.test(piece))return '[^\\S\\r\\n]*'+piece.trim();
-    if(/^\s+$/u.test(piece))return '\\s+';
-    return piece.replace(/[.*+?^{}$()|[\]\\]/gu,'\\$&');
-  }).join('');
-  const matcher=new RegExp(pattern,'gu');
-  const match=matcher.exec(source);
-  if(!match || match[0].length>400)return null;
-  matcher.lastIndex=match.index+1;
-  if(matcher.exec(source))return null;
-  return match[0];
-}
 function proofLocator(row,key,units,allowImage=false){
   const invalid=(message,suffix)=>Object.assign(fail(message),{notationField:key+suffix,notationCode:'notation-'+key+'-locator'});
   const step=row[key+'Step'];
   if(!Number.isSafeInteger(step)||step<1||step>(units?.length??2000))throw invalid('Check the '+key+' passage number.','Step');
   const raw=row[key+'Quote'];
   if(typeof raw!=='string'||raw.length>400)throw invalid('Give a short literal '+key+' passage.','Quote');
-  let quote=clean(raw);
+  let quote=raw.trim();
   const unit=units?.[step-1];
   if(!quote&&allowImage&&(!unit||(unit.page&&!unit.text.trim())))return {[key+'Step']:step,[key+'Quote']:''};
   if(quote.length<5||!/\p{L}|\p{N}/u.test(quote))throw invalid('Copy a literal phrase from '+key+' passage '+step+'.','Quote');
   if(unit){
-    if(unit.text.includes(raw.trim()))quote=raw.trim();
-    else if(!clean(unit.text).includes(quote)){
-      quote=printedLocator(quote,unit.text);
-      if(!quote)throw invalid('Copy a literal phrase from '+key+' passage '+step+'.','Quote');
-    }
+    const match=locatePassageQuote(unit.text,quote);
+    if(!match || match.text.length>400)throw invalid('Copy a literal phrase from '+key+' passage '+step+'.','Quote');
+    quote=match.text;
   }
   return {[key+'Step']:step,[key+'Quote']:quote};
 }
@@ -103,7 +79,7 @@ function partScope(value,ids){
 }
 function normalizedMappings(input,{parts,units,reference}){
   const byId=new Map(parts.map(p=>[p.id,p]));
-  const preferredByPart=new Set(),originalByPart=new Set();
+  const preferredByPart=new Set(),originalByPart=new Set(),unchangedByPart=new Map();
   const mappings=[];
   for(const [index,m] of rows(input,160,'the notation correspondences').entries()){
     try {
@@ -111,13 +87,18 @@ function normalizedMappings(input,{parts,units,reference}){
       const concept=readingText(m.concept,500,'the object and conditions behind the notation');
       const partIds=partScope(m.partIds,byId);
       const source=proofLocator(m,'source',units),ref=proofLocator(m,'reference',reference?.units);
-      if(symbolKey(original)===symbolKey(preferred))throw fail('Keep identical symbols as they are and omit them from the list of changes. Keep the original symbol reserved where other proposed changes could collide with it.');
+      const oldKey=symbolKey(original),newKey=symbolKey(preferred);
+      const unchanged=oldKey===newKey?JSON.stringify([concept,source,ref]):null;
       for(const id of partIds){
-        const src=JSON.stringify([id,symbolKey(original)]),dst=JSON.stringify([id,symbolKey(preferred)]);
+        const src=JSON.stringify([id,oldKey]),dst=JSON.stringify([id,newKey]);
+        if(unchanged && unchangedByPart.get(src)===unchanged)continue;
         if(originalByPart.has(src)||preferredByPart.has(dst))throw Object.assign(fail('Two meanings share a notation in '+id+'. Keep the original symbols where the meanings overlap.'),{notationCode:'notation-map-conflict'});
         originalByPart.add(src);preferredByPart.add(dst);
+        if(unchanged)unchangedByPart.set(src,unchanged);
       }
-      mappings.push({concept,original,preferred,partIds,...source,...ref});
+      // An unchanged symbol reserves its original meaning in these parts. The
+      // row has already passed both locator checks and all collision checks.
+      if(oldKey!==newKey)mappings.push({concept,original,preferred,partIds,...source,...ref});
     } catch(error) { throw mapFinding(error,'mappings',index); }
   }
   return mappings;
@@ -173,7 +154,11 @@ function mathLayout(tex,intern){
       if(type==='mi' && variant==='normal' && /^[A-Za-z]+$/u.test(label))return ['roman:'+label];
       return [intern([type,variant,label])];
     }
-    const transparent=type==='mrow' || (type==='mstyle' && !variant);
+    // Fonts, explicitly colored quantities, enclosure types and fractional
+    // bars can distinguish objects. Fence sizes and display styles cannot.
+    const identity=Object.entries(attributes).filter(([name])=>
+      !['displaystyle','scriptlevel','stretchy','minsize','maxsize'].includes(name)).sort();
+    const transparent=type==='mrow' || (type==='mstyle' && !identity.length);
     const arithmetic=['mfrac','mroot','msqrt','mtable','mtr','mtd'].includes(type);
     const args=children.map(child=>visit(child,visible && (transparent||arithmetic)));
     if(transparent){
@@ -190,9 +175,9 @@ function mathLayout(tex,intern){
     // A power uses its base, e.g. x_j^2 uses x_j. A hatted, starred or indexed
     // identifier can name a different quantity and supplies no such evidence.
     if(visible && (type==='msup'||type==='msubsup') && children.at(-1)?.type==='mn'){
-      rows.push(type==='msup'?args[0]:[intern(['msub','',...args.slice(0,2)])]);
+      rows.push(type==='msup'?args[0]:[intern(['msub',[],...args.slice(0,2)])]);
     }
-    return [intern([type,variant,...args])];
+    return [intern([type,identity,...args])];
   }
   try{
     const tree=renderMathTree(tex,{output:'mathml',strict:'error',throwOnError:true,trust:false,maxExpand:100,maxSize:10});
@@ -201,9 +186,7 @@ function mathLayout(tex,intern){
     return {whole,rows:[whole,...rows]};
   }catch{return {whole:[],rows:[]};}
 }
-function notationIssues(edition,partId,text){
-  const scoped=edition?.mappings.filter(m=>m.partIds.includes(partId));
-  if(!scoped?.length)return [];
+function notationIndex(text){
   const atoms=new Map(),layouts=new Map();
   const intern=key=>{
     const id=JSON.stringify(key);
@@ -216,12 +199,18 @@ function notationIssues(edition,partId,text){
   };
   const rows=[...String(text).matchAll(/\\\(([\s\S]*?)\\\)|\\\[([\s\S]*?)\\\]/gu)]
     .flatMap(m=>layout(m[1]||m[2]||'').rows);
-  if(!rows.length)return [];
   const mentions=tex=>{
     const pattern=layout(tex).whole;
-    return pattern.length && rows.some(row=>row.some((atom,i)=>atom===pattern[0] &&
+    return pattern.length>0 && rows.some(row=>row.some((atom,i)=>atom===pattern[0] &&
       pattern.every((a,k)=>a===row[i+k])));
   };
+  return {mentions,layout};
+}
+function mentionsSymbol(text,symbol){return notationIndex(text).mentions(symbol);}
+function notationIssues(edition,partId,text){
+  const scoped=edition?.mappings.filter(m=>m.partIds.includes(partId));
+  if(!scoped?.length)return [];
+  const {mentions,layout}=notationIndex(text);
   const preferred=new Set(scoped.map(m=>JSON.stringify(layout(m.preferred).whole)));
   return scoped.filter(m=>!preferred.has(JSON.stringify(layout(m.original).whole)) &&
     mentions(m.original) && !mentions(m.preferred));
@@ -499,4 +488,4 @@ async function buildNotationEdition(input,rawReference,{worker,renderSourcePage,
     if(path.dirname(dir)===root&&path.basename(dir).startsWith('proof-reader-notation-'))await fs.rm(dir,{recursive:true,force:true,maxRetries:3,retryDelay:70});
   }
 }
-module.exports={notationRevision,normalizeNotationReference,normalizeNotationEdition,buildNotationEdition,notationForPrompt,notationIssue,notationIssues};
+module.exports={notationRevision,normalizeNotationReference,normalizeNotationEdition,buildNotationEdition,notationForPrompt,notationIssue,notationIssues,mentionsSymbol};

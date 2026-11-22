@@ -6,6 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const {unexpectedCheckpoint}=require('./plan-checkpoints.cjs');
 const {workerFailureCode,workerFailureMessage}=require('./worker-failure.cjs');
+const {createEvidenceIndex}=require('./prose-evidence.cjs');
 
 const MiB = 1024 * 1024;
 const skillDirectory = path.join(__dirname, 'skills', 'paper-techniques');
@@ -118,13 +119,14 @@ function sourceAnchors(candidates, steps, units, verifiedCache) {
   const anchors = new Map();
   for (const candidate of candidates) {
     if (!isRecord(candidate) || !steps.includes(candidate.step)) continue;
-    const {step, phrase} = candidate;
+    const {step} = candidate;
+    let {phrase} = candidate;
     if (typeof phrase !== 'string' || !phrase || phrase.length > 160 || phrase.trim() !== phrase ||
         /[\u0000-\u001f\u007f\u2028\u2029]/u.test(phrase) || !/\p{L}/u.test(phrase)) continue;
     if (units) {
-      const text = units[step - 1].text;
-      const first = text.indexOf(phrase);
-      if (first < 0 || text.lastIndexOf(phrase) !== first) continue;
+      const span=createEvidenceIndex(units[step-1].text).locate(phrase);
+      if (!span || span.text.length>160 || /[\u0000-\u001f\u007f\u2028\u2029]/u.test(span.text)) continue;
+      phrase=span.text;
     }
     // Two different eligible spans give no single position for this reference.
     if (!anchors.has(step)) anchors.set(step, phrase);

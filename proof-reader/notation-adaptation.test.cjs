@@ -2,7 +2,7 @@ const test=require('node:test');
 const assert=require('node:assert/strict');
 const fs=require('node:fs/promises');
 const path=require('node:path');
-const {normalizeNotationReference,normalizeNotationEdition,buildNotationEdition,notationForPrompt,notationIssue,notationIssues}=require('./notation-adaptation.cjs');
+const {normalizeNotationReference,normalizeNotationEdition,buildNotationEdition,notationForPrompt,notationIssue,notationIssues,mentionsSymbol}=require('./notation-adaptation.cjs');
 
 test('notation checks read mathematical identities and ignore typography and protected names',()=>{
   const scope=['setup'];
@@ -18,6 +18,10 @@ test('notation checks read mathematical identities and ignore typography and pro
   assert.deepEqual(issues('Use \\(\\frac{\\operatorname{OPT}\\left(I\\right)}{T}\\) and \\(r_{j}^{2}\\).'),[set,optimum,time,release]);
   assert.deepEqual(issues('Compute \\(\\frac{T^2}{\\mathbf{I}}\\).'),[time]);
   assert.deepEqual(notationIssues(edition,'other','Take \\(T\\).'),[]);
+  const uses='Compare \\(r_{j}^{2}\\) with \\(\\operatorname{OPT}(I)\\).';
+  assert.ok(mentionsSymbol(uses,'r_j'));
+  assert.ok(mentionsSymbol(uses,'\\mathrm{OPT}'));
+  for(const other of ['r','r_i','\\mathrm{PT}','\\mathbf I'])assert.equal(mentionsSymbol(uses,other),false,other);
 });
 
 const targetQuote='H is the common deadline.';
@@ -64,6 +68,35 @@ test('source-grounded edition preserves citations and restores scoped notation i
   assert.equal(normalizeNotationReference(undefined),undefined);
   assert.throws(()=>normalizeNotationReference({title:'Just a title',units:[]}),/passages/);
   assert.deepEqual(normalizeNotationReference({...reference,id:'library-entry'}).units,[{step:1,text:reference.units[0].text,page:2}]);
+});
+
+test('notation spelling changes reserve the same object and recover the source wording without a worker retry',async()=>{
+  const originalQuote='Record the deadline \\(d_{i}\\) of each task.';
+  const proposedQuote=originalQuote.replace('d_{i}','d_i');
+  const paper={...input,units:[{...units[0],text:originalQuote}]};
+  const keep={...map,concept:'An individual deadline',original:'d_i',preferred:'d_{i}',sourceQuote:proposedQuote,referenceQuote:originalQuote};
+  const document={...reference,units:[{text:originalQuote}]};
+  const probe=worker(async phase=>phase.startsWith('notation-map')?{mappings:[keep,{...keep,original:'d_{i}'}],retained:[]}:
+    {...reformulation,parts:[{...reading,sourceQuote:proposedQuote}]});
+  const edition=await buildNotationEdition(paper,document,{worker:probe.run});
+  assert.deepEqual(probe.calls,['notation-map-schema.json','notation-rewrite-0-schema.json']);
+  assert.deepEqual(edition.mappings,[]);
+  assert.equal(edition.parts[0].sourceQuote,originalQuote);
+  const options={units:paper.units,analysis:paper.analysis,reference:document};
+  const colliding={...keep,original:'u',preferred:'d_{i}'};
+  assert.throws(()=>normalizeNotationEdition({...edition,mappings:[keep,{...keep,concept:'Arrival time'}]},options),e=>e.finding?.code==='notation-map-conflict');
+  for(const mappings of [[keep,colliding],[colliding,keep]]){
+    assert.throws(()=>normalizeNotationEdition({...edition,mappings},options),e=>e.finding?.code==='notation-map-conflict');
+  }
+  const distinct={...keep,preferred:'\\mathbf{d}_{i}'};
+  assert.equal(normalizeNotationEdition({...edition,mappings:[distinct]},options).mappings.length,1);
+  const wrong={...reading,sourceQuote:proposedQuote.replace('d_i','d_j')};
+  assert.throws(()=>normalizeNotationEdition({...edition,parts:[wrong]},options),/literal phrase/);
+  const check=(text,sourceQuote)=>normalizeNotationEdition({...edition,parts:[{...reading,sourceQuote}]},
+    {...options,units:[{text}]});
+  assert.throws(()=>check('The leaf has weight 10.','has weight 1'),/literal phrase/);
+  assert.throws(()=>check(originalQuote+' '+proposedQuote,originalQuote),/literal phrase/);
+  assert.equal(check(originalQuote+' '+originalQuote,originalQuote).parts[0].sourceQuote,originalQuote);
 });
 
 test('interrupted notation adaptation resumes completed parts and splits a repeatedly timing-out batch',async()=>{

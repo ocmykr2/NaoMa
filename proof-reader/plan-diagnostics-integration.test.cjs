@@ -86,6 +86,27 @@ function assertPrivate(report) {
   for (const excerpt of [printed,section,wrongQuote,source]) assert.equal(json.includes(excerpt),false);
 }
 
+test('equivalent first-use evidence finishes the ordinary review without sending a revision',async t=>{
+  const dir=await temporaryCache(t),body=structuredClone(request);
+  const prose='The degree \\(d_{i}\\) counts the neighbors of the chosen vertex.';
+  const quote='The  degree \\[d_i\\] counts the neighbors of the chosen vertex.';
+  body.units[0].text+=' '+prose;
+  const row=draft(printed);
+  row.orientation.paragraphs=[prose];
+  row.orientation.notation=[{symbol:'\\(d_i\\)',meaning:'The degree of the chosen vertex.'}];
+  const calls=[];
+  const api=client(dir,async({outputPath})=>{
+    const file=path.basename(outputPath);calls.push(file);
+    const parts=file==='plan.json'?[row]:[{...editorRow(row),notationEvidence:[quote]}];
+    await fs.writeFile(outputPath,JSON.stringify({parts}));
+  });
+  const ready=await api.finished(await api.post(body));
+  assert.equal(ready.status,'ready',ready.message);
+  assert.deepEqual(calls,['plan.json','edited.json']);
+  assert.deepEqual(ready.parts[0].orientation.paragraphs,[prose]);
+  assert.equal((await api.diagnostics(ready.key)).retryCount,0);
+});
+
 test('plan drafting and editorial review use the provider selected at submission',async t=>{
   const cacheDir=await temporaryCache(t);
   let provider='claude';
@@ -522,6 +543,8 @@ test('an older rejected bound with a saved candidate can resume once under the n
   await log.record({...failed,boundCheckVersion:2});
   assert.equal((await api.get(key)).actionRequired,'review');
   await log.record({...failed,boundCheckVersion:3});
+  assert.equal((await api.get(key)).actionRequired,'review');
+  await log.record({...failed,boundCheckVersion:4});
   const exhausted=await api.get(key);
   assert.equal(exhausted.status,'error');assert.equal(exhausted.resumeReview,undefined);
   const stale=await api.post({...request,resumeReview:offer.resumeReview});
@@ -559,6 +582,27 @@ test('recovery locates a rejected part inside its saved batch and leaves accepte
   await log.record(failed);
   await history.save(new Map([[3,{...row,editNotes:[{...note,reason:'Editorial review returned incomplete sections.'}]}]]));
   await assert.rejects(api.get(key),{status:404});
+});
+
+test('only a locally resolved first-use spelling failure can reopen an older paused notation review',async t=>{
+  const dir=await temporaryCache(t);
+  const {planCheckpoints}=require('./plan-checkpoints.cjs');
+  const {planDiagnostics}=require('./plan-diagnostics.cjs');
+  const {readingPlanKey}=require('./personalized-plan.cjs');
+  const key=await readingPlanKey(request),history=planCheckpoints(dir,key,100000);
+  const log=planDiagnostics(dir,key),part=draft(printed);
+  const clause='The vertex degree \\(d_{i}\\) counts its neighbors.';
+  part.orientation.paragraphs=[clause];
+  part.orientation.notation=[{symbol:'\\(d_i\\)',meaning:'The degree of the chosen vertex.'}];
+  const proposal=editorRow(part);
+  const note={id:part.id,reason:'Editorial review of first-use notation: Quote exact prose from a first-use clause that actually names the mathematical object, including the delimited symbol.',proposal};
+  const save=()=>history.save(new Map([[0,{grounded:[part],editNotes:[note]}]]));
+  await log.record({event:'failed',code:'editorial-rejected',stage:'revising-notation',boundCheckVersion:3,firstPart:1,lastPart:1,totalParts:1});
+  const api=client(dir,()=>assert.fail('Checking a saved status invoked a worker'));
+  proposal.notationEvidence=[clause.replace('{i}','j')];await save();
+  await assert.rejects(api.get(key),{status:404});
+  proposal.notationEvidence=[clause.replace('{i}','i')];await save();
+  assert.equal((await api.get(key)).resumeReview,key+'/1');
 });
 
 test('finishing a verified section restores recovery capacity for a later independent failure',async t=>{
