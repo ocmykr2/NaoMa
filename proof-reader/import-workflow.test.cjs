@@ -206,7 +206,7 @@ function libraryFixture(records = new Map()) {
   return {...window.PAPER_LIBRARY,indexedDB};
 }
 
-function createApp({local = storage(),library = libraryFixture(),search = '',post = [],poll = [],plans = [],diagnostics = [],structures = [],answers = [],removals = [],extractedPages = pages,modelSettings = {provider:'codex'}} = {}) {
+function createApp({local = storage(),library = libraryFixture(),search = '',post = [],poll = [],plans = [],diagnostics = [],structures = [],answers = [],removals = [],extractedPages = pages,modelSettings = {provider:'codex'},versionResponse} = {}) {
   const document = documentFixture(), window = new EventTarget();
   const location = new URL('http://fixture.invalid/'+search);
   const calls = [], titles = [];
@@ -215,6 +215,7 @@ function createApp({local = storage(),library = libraryFixture(),search = '',pos
   const json = body => ({ok:true,json:async () => body});
   async function fetch(url,args = {}) {
     calls.push({url,method:args.method || 'GET',body:args.body,headers:args.headers});
+    if (url === '/api/reader-version') return versionResponse?.() ?? json({runningVersion:'1.0.0',installedVersion:'1.0.0'});
     if (url === '/api/model-provider') {
       if (args.method === 'PUT') {
         if (modelSettings.saveError) return {ok:false,json:async()=>({error:modelSettings.saveError})};
@@ -956,6 +957,26 @@ test('a background window moves from an obsolete error to the active plan and op
   assert.equal(app.calls.filter(c=>c.url==='/api/reading-plan' && c.method==='POST').length,0);
 });
 
+test('a stopped plan identifies a stale service and checking its version leaves the saved job alone',async()=>{
+  const versions={runningVersion:'1.0.0',installedVersion:'1.0.1'};
+  let legacy=false;
+  const error={status:'error',key:'plan-1',unexpected:true,failureCode:'unexpected-failure',failureStage:'editing',message:'Review paused.'};
+  const app=createApp({post:[ready],plans:[error],versionResponse:()=>legacy?
+    {status:404,ok:false}:{status:200,ok:true,json:async()=>({...versions})}});
+  await openPdf(app);await checkPublished(app);
+  app.fire('continuePreflight','click');
+  const notice=app.el('serviceUpdateNotice'),version=app.el('diagnosticVersion');
+  await until(()=>!notice.hidden && notice.textContent.includes('1.0.1'),'restart notice was missing');
+  assert.match(notice.textContent,/running Naoma 1\.0\.0/);
+  versions.runningVersion='1.0.1';
+  app.el('planDiagnostics').open=true;app.fire('planDiagnostics','toggle');
+  await until(()=>notice.hidden && version.textContent==='Running Naoma 1.0.1.','outdated restart notice persisted');
+  legacy=true;app.fire('refreshDiagnostics','click');
+  await until(()=>!notice.hidden && version.textContent.includes('predates version reporting'),'older service was misidentified');
+  assert.equal(app.calls.filter(c=>c.url==='/api/reading-plan' && c.method==='POST').length,1);
+  assert.ok(app.calls.filter(c=>c.url==='/api/reader-version').every(c=>c.method==='GET' && !c.body));
+});
+
 test('diagnostics are fetched on demand and copy only operational fields',async()=>{
   const pending=deferred(),refresh=deferred();
   const progress={stage:'checking',firstPart:1,lastPart:2,draftedParts:2,completedParts:0,totalParts:2,blockedParts:[1],waitingParts:[2]};
@@ -994,6 +1015,34 @@ test('diagnostics are fetched on demand and copy only operational fields',async(
   assert.equal(panel.hidden,true);assert.equal(panel.open,false);assert.equal(app.el('diagnosticReport').textContent,'');
 });
 
+test('open diagnostics follow the same preparation through progress and failure despite late replies',async()=>{
+  const advance=deferred(),fail=deferred(),slow=deferred();
+  const running={key:'plan-1',status:'running',progress:{stage:'drafting',draftedParts:1,completedParts:0,totalParts:2,updatedAt:10}};
+  const review={...running,progress:{...running.progress,stage:'editing',draftedParts:2,completedParts:1,updatedAt:20}};
+  const stopped={...review,status:'error',needsAction:true,actionRequired:'review',message:'The last section needs review.',
+    progress:{...review.progress,stage:'revising-draft',updatedAt:30}};
+  const report={...running,historyAvailable:true,events:[]};
+  const app=createApp({post:[ready],plans:[running,advance.promise,fail.promise],diagnostics:[report,slow.promise,report]});
+  await openPdf(app);await checkPublished(app);
+  app.fire('continuePreflight','click');
+  await until(()=>app.window.READER_SESSION.session(hash).study.status==='running','plan did not start');
+  const requests=()=>app.calls.filter(c=>c.url.endsWith('/diagnostics')).length;
+  const panel=app.el('planDiagnostics'),view=app.el('diagnosticReport');
+  panel.open=true;app.fire('planDiagnostics','toggle');
+  await until(()=>app.el('diagnosticStatus').textContent.includes('Latest diagnostic snapshot'),'initial diagnostics missing');
+  assert.equal(requests(),1);assert.match(view.textContent,/Reviewed  0\/2/);
+  advance.resolve(review);
+  await until(()=>requests()===2,'open panel did not refresh when the same plan advanced');
+  assert.match(view.textContent,/Reviewed  1\/2/);
+  fail.resolve(stopped);
+  await until(()=>app.body.dataset.paperState==='failed' && requests()===3,'terminal diagnostics were not requested');
+  await until(()=>app.el('diagnosticStatus').textContent.includes('earlier snapshot'),'stale service snapshot was not identified');
+  slow.resolve({...report,...review});
+  await new Promise(setImmediate);
+  assert.equal(panel.open,true);
+  assert.match(view.textContent,/Status  error[\s\S]*Stage  revising-draft[\s\S]*Drafted  2\/2[\s\S]*Reviewed  1\/2/);
+});
+
 test('diagnostics remain readable for a legacy job, an unavailable service or a missing job ID',async()=>{
   for (const scenario of ['legacy','offline','missing']) {
     const assigned=scenario!=='missing';
@@ -1003,7 +1052,7 @@ test('diagnostics remain readable for a legacy job, an unavailable service or a 
     await openPdf(app);await checkPublished(app);
     app.fire('continuePreflight','click');await until(()=>app.body.dataset.paperState==='failed','failed plan missing');
     app.el('planDiagnostics').open=true;app.fire('planDiagnostics','toggle');
-    await until(()=>app.el('diagnosticReport').textContent.includes('Status  error'),'fallback snapshot missing');
+    await until(()=>!app.el('copyDiagnostics').disabled && app.el('diagnosticReport').textContent.includes('Status  error'),'fallback snapshot missing');
     const note=app.el('diagnosticStatus').textContent;
     assert.match(note,scenario==='legacy'?/No event history/:scenario==='offline'?/last known status/:/job ID/);
     assert.equal(app.calls.filter(c=>c.url.endsWith('/diagnostics')).length,assigned?1:0);

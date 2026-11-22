@@ -16,7 +16,9 @@ Select a paper in the picker, click **Remove paper…**, and confirm its title. 
 
 ## Diagnose reading-plan preparation
 
-Open **Diagnostics** on the waiting or failure screen. Click **Refresh** for the latest events, or **Copy diagnostics** to include the report in a bug report. Use the part number, page, field and check code to locate the problem. The report contains operational metadata and an opaque job key.
+Open **Diagnostics** on the waiting or failure screen to see the running service version and progress. The open panel follows the preparation as it advances. If the installed version changes while Naoma is open, the failure screen tells you to close and reopen the app to load the update. The **Retry** button uses the currently running service.
+
+Click **Refresh** for the latest events or **Copy diagnostics** to include the report in a bug report. Use the part number, page, field and check code to locate the problem. The report contains operational metadata and an opaque job key.
 
 Naoma checks the first use of a symbol against the sentence where the reader sees it. Equivalent spellings such as `x_i` and `x_{i}` can match locally. When a damaged formula has one unambiguous match in the supplied evidence, Naoma can restore its original spelling. For example, if a formula closer has replaced the closing brace of a set, the complete set in the grounded draft can establish the repair. If the formula still needs editing, the editor receives its field, character position and offending token.
 

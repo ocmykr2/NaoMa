@@ -53,7 +53,7 @@
     const el=id=>document.getElementById(id);
     const panel=el("planDiagnostics"),status=el("diagnosticStatus"),output=el("diagnosticReport");
     const reload=el("refreshDiagnostics"),copy=el("copyDiagnostics"),manual=el("diagnosticCopyText");
-    let target=null,study=null,scope="plan",generation=0,copyText="";
+    let target=null,study=null,scope="plan",generation=0,copyText="",snapshot="";
 
     function present(report,note) {
       copyText=JSON.stringify(report,null,2);
@@ -82,15 +82,20 @@
       copy.disabled=true;
       copyText="";
       manual.hidden=true;
-      output.textContent="";
+      output.textContent=display(saved);
       status.textContent="Loading diagnostics…";
       try {
         const report=await load(study.key);
         if (current!==generation) return;
         if (!report || report.key!==saved.key || !Array.isArray(report.events)) throw Error("invalid diagnostic response");
         const events=report.events.map(e=>fields(e,eventFields));
+        const progress=progressSummary(report.progress || saved.progress);
+        const localTime=saved.progress.updatedAt ?? 0,reportTime=progress.updatedAt ?? 0;
+        const older=(reportTime>0 && localTime>reportTime) ||
+          (saved.status==="error" && report.status==="running" && localTime>=reportTime);
         present({...fields(saved,["failureCode","failureStage"]),...fields(report,["version","key","status","attempt","retryCount","failureCode","failureStage"]),historyAvailable:report.historyAvailable===true,
-          progress:progressSummary(report.progress || saved.progress),events},report.historyAvailable===false?
+          ...(older?{status:saved.status}:{}),progress:older?saved.progress:progress,events},older?
+          "Showing the app’s latest progress. The event history is from an earlier snapshot.":report.historyAvailable===false?
           "No event history was recorded for this run.":"Latest diagnostic snapshot.");
       } catch (error) {
         if (current!==generation) return;
@@ -125,7 +130,13 @@
       scope=kind;
       study=job;
       panel.hidden=!job;
-      if (identity===target) return;
+      const revision=job?JSON.stringify([job.status,job.failureCode,job.failureStage,progressSummary(job.progress)]):"";
+      const changed=snapshot!==revision;
+      snapshot=revision;
+      if (identity===target) {
+        if (changed && panel.open) refresh();
+        return;
+      }
       target=identity;
       generation++;
       panel.open=false;
@@ -134,5 +145,51 @@
       manual.value="";manual.hidden=true;copyText="";
     };
   }
-  window.PLAN_DIAGNOSTICS={attach};
+  function attachVersion() {
+    const panel=document.getElementById("planDiagnostics"),label=document.getElementById("diagnosticVersion");
+    const notice=document.getElementById("serviceUpdateNotice");
+    if (!panel || !label || !notice) return ()=>{};
+    let state=null,sequence=0;
+    function failed() { return state==="failed" || state==="tailor-failed"; }
+    function eligible() { return failed() || (state==="tailoring" && panel.open); }
+    function show(node, text) {
+      if (node.textContent!==text) node.textContent=text;
+      node.hidden=!text;
+    }
+    async function refresh() {
+      if (!eligible()) return;
+      const request=++sequence;
+      let versionText="Service version unavailable.",updateText="";
+      try {
+        const response=await fetch("/api/reader-version",{cache:"no-store"});
+        if (response.status===404) {
+          versionText="The running service predates version reporting.";
+          updateText="Close Naoma and reopen it to load the installed version.";
+        } else if (response.ok) {
+          const {runningVersion,installedVersion}=await response.json();
+          const valid=v=>typeof v==="string" && /^\d+\.\d+\.\d+$/u.test(v);
+          if (valid(runningVersion)) versionText="Running Naoma "+runningVersion+".";
+          if (valid(installedVersion) && valid(runningVersion) && installedVersion!==runningVersion) {
+            versionText+=" Installed version "+installedVersion+".";
+            updateText="This window is running Naoma "+runningVersion+". Close and reopen Naoma to use the installed version "+installedVersion+".";
+          }
+        }
+      } catch { /* The existing preparation status remains available offline. */ }
+      if (request!==sequence) return;
+      show(label,versionText);
+      show(notice,failed()?updateText:"");
+    }
+    panel.addEventListener("toggle",()=>{if (panel.open) refresh();});
+    document.getElementById("refreshDiagnostics").addEventListener("click",refresh);
+    window.addEventListener("focus",refresh);
+    return function onState(next) {
+      if (next===state) return;
+      state=next;
+      sequence++;
+      show(label,"");
+      show(notice,"");
+      refresh();
+    };
+  }
+  window.PLAN_DIAGNOSTICS={attach,attachVersion};
 })();

@@ -5,6 +5,7 @@
   // A desktop service already open during an update can still serve the old
   // list of assets. Reading and recovery should work until its next launch.
   const showDiagnostics=window.PLAN_DIAGNOSTICS?.attach(window.READER_SESSION.planDiagnostics) || (()=>{});
+  const showServiceVersion=window.PLAN_DIAGNOSTICS?.attachVersion?.() || (()=>{});
   const make = (tag, className, content) => {
     const node = document.createElement(tag);
     if (className) node.className = className;
@@ -693,6 +694,7 @@
     el("paperPicker").disabled = !choice;
     el("removePaper").hidden = !paperId || !!openingChoice;
     const state = paperState();
+    showServiceVersion(state);
     if (state) {
       if (paperId === "import" && !openingChoice && (state === "failed" || state === "preparing")) {
         registerPaper(paperKey(),state === "failed" ? "Preparation paused" : "Preparing paper…");
@@ -1010,6 +1012,7 @@
     }
     if (change === "study-progress") {
       if (paperState()==="tailoring") {
+        showDiagnostics(key,currentSession().study);
         const message=showPlanProgress("tailoring");
         if (el("paperStateMessage").textContent!==message) el("paperStateMessage").textContent=message;
       }

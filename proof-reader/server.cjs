@@ -36,6 +36,15 @@ const directory = process.platform === 'win32' ? __dirname.toLowerCase() : __dir
 const identity = JSON.stringify({
   app: 'proof-reader', installation: createHash('sha256').update(directory).digest('hex'),
 });
+async function readInstalledVersion() {
+  try {
+    const version = (await readFile(path.join(__dirname, 'VERSION'), 'utf8')).trim();
+    return /^\d+\.\d+\.\d+$/u.test(version) ? version : null;
+  } catch {
+    return null;
+  }
+}
+const runningVersion = readInstalledVersion();
 
 const maxUpload = 12 * 1024 * 1024;
 const maxText = 4 * 1024 * 1024;
@@ -245,6 +254,17 @@ const server = http.createServer({ requestTimeout: 30000, headersTimeout: 15000 
       await handleQuestion(req, res, route);
       return;
     }
+    if (route === '/api/reader-version') {
+      checkLocalRequest(req);
+      if (req.method !== 'GET') {
+        res.setHeader('Allow', 'GET');
+        throw new RequestError(405, 'Use GET to check the reader version.');
+      }
+      const versions = {runningVersion:await runningVersion, installedVersion:await readInstalledVersion()};
+      res.writeHead(200, {'Content-Type':'application/json; charset=utf-8'});
+      res.end(JSON.stringify(versions));
+      return;
+    }
     if (route === '/api/reader-identity') {
       if (req.method !== 'GET') {
         res.setHeader('Allow', 'GET');
@@ -347,4 +367,4 @@ server.on('error', async error => {
   }
   process.exitCode = 1;
 });
-server.listen(port, '127.0.0.1', () => showReader(server.address().port));
+runningVersion.then(() => server.listen(port, '127.0.0.1', () => showReader(server.address().port)));
