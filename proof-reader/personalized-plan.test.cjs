@@ -1506,6 +1506,18 @@ test('a verified PDF definition receipt is reusable only for the same claim, loc
     const result=await cold.finish(await cold.post(body));
     assert.equal(calls,expected,name);assert.equal(result.status,expected?'error':'ready',name+' '+(result.message||''));
   }
+  const shared=structuredClone(body),two=structuredClone(rows);
+  shared.analysis.parts[0].sourceSteps=[1,2];
+  two[0].orientation.definitions=[card];
+  let targets;
+  const both=client(await cache(t),async job=>{
+    if(path.basename(job.outputPath)!=='definition-grounding.json')return fs.writeFile(job.outputPath,JSON.stringify({parts:two}));
+    targets=JSON.parse(job.prompt.split('\n\n').at(-1));
+    throw Error('The Codex account reached a usage limit.');
+  },render);
+  assert.equal((await both.finish(await both.post(shared))).status,'error');
+  assert.equal(targets.length,2);
+  assert.equal(new Set(targets.map(item=>item.id)).size,2,'identical raw cards in different parts have distinct decisions');
 });
 
 test('a rejected grouped definition cannot pass by changing its locator and can be split across original pages',async t=>{
