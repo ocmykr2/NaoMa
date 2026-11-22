@@ -984,8 +984,9 @@ test('an incomplete or unresolved editorial review cannot publish the draft and 
     }
     assert.equal(result.status,'error',scenario);
     if (scenario==='corrupt TeX escape') {
-      assert.match(result.message,/paragraph 2\. At character 13/);
-      assert.ok(result.message.includes('\\u001c'));
+      assert.match(result.message,/unsupported formatting in paragraph 2\b/);
+      assert.match(result.message,/control at character 13\b/i);
+      assert.match(result.message,/U\+001C\b/i);
     }
     assert.equal(Object.hasOwn(result,'parts'),false);
     assert.equal((await fs.readdir(cacheDir)).includes(result.key+'.json'),false);
@@ -2197,6 +2198,31 @@ test('a signed interval endpoint can be named separately while a changed inequal
     assert.equal(plan.status,'ready',plan.message);
     assert.deepEqual(plan.parts[1].orientation.paragraphs,correct);
     assert.equal(attempts,changed?2:1);
+  }
+});
+
+test('editorial review preserves the subject and value when citing a parallel list',async t=>{
+  const body=structuredClone(requestBody),draft=structuredClone(authored);
+  const declaration='Trays \\(2,3,7\\) have sampling rates \\(2^{-2},2^{-3},2^{-6}\\), respectively.';
+  const otherRate='The first rate is \\(2^{-2}\\).';
+  const correct='Isolate tray \\(7\\), whose sampling rate is \\(2^{-6}\\), to study the rare samples.';
+  // The swapped rate is an independently grounded formula, just for a different tray.
+  const swapped=correct.replace('2^{-6}', '2^{-2}');
+  Object.assign(draft[1].orientation,{introduction:declaration,paragraphs:[otherRate]});
+  let attempts=0,swap=false;
+  const api=client(await cache(t),job=>fs.writeFile(job.outputPath,JSON.stringify({parts:draft})),undefined,
+    async (_job,input)=>asEditorialRows(input.parts.map(part=>{
+      if (part.id!=='total') return part;
+      attempts++;
+      return {...part,orientation:{...part.orientation,paragraphs:[swap && attempts===1?swapped:correct]}};
+    })));
+  for (const wrongPair of [false,true]) {
+    swap=wrongPair;attempts=0;
+    body.analysis.revision='parallel quantities '+swap;
+    const plan=await api.finish(await api.post(body));
+    assert.equal(plan.status,'ready',plan.message);
+    assert.deepEqual(plan.parts[1].orientation.paragraphs,[correct]);
+    assert.equal(attempts,swap?2:1);
   }
 });
 

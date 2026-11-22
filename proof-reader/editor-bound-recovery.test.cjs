@@ -121,6 +121,60 @@ test('a persistent bound-changing edit requires a fresh source audit to publish 
   }
 });
 
+test('one section revision receives every distinct failed bound and restoring its draft requires every citation',async t=>{
+  const intro='Count the tiles in the two displays.';
+  const sum='The paired tiles give the sum \\(2+2=4\\).';
+  const quotient='Dividing nine tiles among three shelves gives \\(9/3=3\\) on each shelf.';
+  const source=sum+' '+quotient;
+  const parts=[{id:'tiles',title:'Count the displayed tiles',summary:intro,sourceSteps:[1]}];
+  const body={title:'Tile displays',units:[{title:'Displays',text:source}],analysis:{parts,
+    localIntroductions:[],knowledge:{techniques:[],definitionGroups:[]}},readerKnowledge:{techniques:[],definitionGroups:[]}};
+  for(const [scenario,expectedAudits] of [['edit both',0],['cite both',1],['omit second citation',2],['new second finding',3]]){
+    const cacheDir=await fs.mkdtemp(path.join(os.tmpdir(),'reader-all-bounds-'));
+    t.after(()=>fs.rm(cacheDir,{recursive:true,force:true}));
+    const checkpoints=planCheckpoints(cacheDir,await readingPlanKey(body),100000);
+    let edits=0,audits=0;
+    const {job,trace}=await runPlan(cacheDir,body,async({directory,schemaPath,outputPath,prompt})=>{
+      const schema=JSON.parse(await fs.readFile(schemaPath,'utf8'));
+      let row={id:'tiles',question:'What are the two counts?',orientation:{introduction:intro,paragraphs:[sum,quotient],
+        definitions:[],notation:[],statement:null,handoff:''}};
+      if (path.basename(outputPath)==='edited.json' && schema.properties.parts.items.required.includes('supported')) {
+        audits++;
+        assert.ok(schema.properties.parts.items.required.includes('additionalWitnesses'));
+        const complete=scenario==='cite both' || (scenario==='new second finding' && audits===3);
+        row={id:'tiles',supported:true,sourceStep:1,sourceQuote:sum,originalBound:'2+2=4',sourceCheck:'Checked both tile counts in the display.',
+          unresolved:'',formalAfter:0,notationEvidence:[],additionalWitnesses:complete?[{sourceStep:1,sourceQuote:quotient,originalBound:'9/3=3'}]:[]};
+      } else if (path.basename(outputPath)==='edited.json') {
+        edits++;
+        if(edits===2){
+          const [note]=JSON.parse(await fs.readFile(path.join(directory,'editor-revisions.json'),'utf8'));
+          assert.deepEqual(note.boundFindings,[{unsupportedBound:'2+2=5',groundedAlternatives:['2+2=4']},
+            {unsupportedBound:'9/3=4',groundedAlternatives:['9/3=3']}]);
+          assert.equal(note.unsupportedBound,'2+2=5');
+          assert.deepEqual((await checkpoints.load()).get(0).editNotes[0].boundFindings,note.boundFindings);
+          assert.ok(prompt.includes(JSON.stringify(note.boundFindings)));
+        }
+        const badSum=sum.replace('2+2=4','2+2=5');
+        const badQuotient=quotient.replace('9/3=3',scenario==='new second finding' && edits===3?'9/3=6':'9/3=4');
+        const paragraphs=scenario==='edit both' && edits===2?[sum,quotient]:[badSum,badQuotient,badSum.replace('2+2=5','2 + 2 = 5')];
+        row={id:'tiles',introduction:intro,paragraphs,handoff:'',formalAfter:0,notationEvidence:[],referenceNotation:null,
+          definitionCorrections:[],proseNotationCards:[],sourceCheck:'Compared the two counts with the displays.',unresolved:''};
+      }
+      await fs.writeFile(outputPath,JSON.stringify({parts:[row]}));
+    });
+    assert.equal(audits,expectedAudits,scenario);
+    assert.equal(edits,expectedAudits<2?2:3,scenario);
+    if(scenario==='omit second citation'){
+      assert.equal(job.status,'error',job.message);
+      assert.equal(job.parts,undefined);
+    } else {
+      assert.equal(job.status,'ready',job.message);
+      assert.deepEqual(job.parts[0].orientation.paragraphs,[sum,quotient]);
+    }
+    assert.doesNotMatch(JSON.stringify(trace),/2\+2=5|9\/3=4/);
+  }
+});
+
 test('spelling changes of a rejected bound do not reopen a completed source audit',async t=>{
   const cacheDir=await fs.mkdtemp(path.join(os.tmpdir(),'reader-source-receipt-'));
   t.after(()=>fs.rm(cacheDir,{recursive:true,force:true}));
@@ -190,6 +244,36 @@ test('a cosmetic rewrite of an unsupported numbered claim does not consume anoth
     if(newContent) assert.deepEqual(job.parts[0].orientation.paragraphs,[text]);
     else assert.match(job.message,/unsupported numbered result/u);
   }
+});
+
+test('an editor receives the markup token and its position in the original paragraph while diagnostics stay free of excerpts',async t=>{
+  const cacheDir=await fs.mkdtemp(path.join(os.tmpdir(),'reader-markup-location-'));
+  t.after(()=>fs.rm(cacheDir,{recursive:true,force:true}));
+  const introduction='Arrange two pairs of tiles on a shelf.';
+  const paragraphs=['Count the tiles in each pair.','The sum \\(2+2=4\\) counts them all.'];
+  const problem=paragraphs[1]+' Compare \\loosecommand here.';
+  const body={title:'Count shelf tiles',units:[{title:'Shelf',text:[introduction,...paragraphs].join(' ')}],analysis:{
+    parts:[{id:'shelf',title:'Count the shelf tiles',summary:introduction,sourceSteps:[1]}],
+    localIntroductions:[],knowledge:{techniques:[],definitionGroups:[]}},readerKnowledge:{techniques:[],definitionGroups:[]}};
+  let edits=0,feedback;
+  const {job,trace}=await runPlan(cacheDir,body,async({directory,outputPath})=>{
+    let row={id:'shelf',question:'How many tiles are there?',orientation:{introduction,paragraphs,
+      definitions:[],notation:[],statement:null,handoff:''}};
+    if(path.basename(outputPath)==='edited.json'){
+      edits++;
+      if(edits>1) [feedback]=JSON.parse(await fs.readFile(path.join(directory,'editor-revisions.json'),'utf8'));
+      row={id:'shelf',introduction,paragraphs:edits===1?[paragraphs[0],problem]:paragraphs,handoff:'',formalAfter:0,
+        referenceNotation:null,proseNotationCards:[],notationEvidence:[],definitionCorrections:[],
+        unresolved:'',sourceCheck:'Checked the number of tiles in the two pairs.'};
+    }
+    await fs.writeFile(outputPath,JSON.stringify({parts:[row]}));
+  });
+  assert.equal(job.status,'ready',job.message);
+  assert.equal(edits,2);
+  assert.equal(feedback.id,'shelf');
+  assert.ok(feedback.reason.includes('unsupported formatting in paragraph 2.'));
+  assert.ok(feedback.reason.includes('math-delimiter at character '+(problem.indexOf('\\loosecommand')+1)+' ('+JSON.stringify('\\loosecommand')+')'));
+  assert.doesNotMatch(JSON.stringify(trace),/loosecommand|shelf tiles|counts them all/iu);
 });
 
 test('a cold batch keeps the pending finding and gives an unseen sibling its own first correction',async t=>{

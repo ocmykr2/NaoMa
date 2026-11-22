@@ -581,7 +581,8 @@ test('recovery locates a rejected part inside its saved batch and leaves accepte
   await assert.rejects(api.get(key),{status:404});
   await log.record(failed);
   await history.save(new Map([[3,{...row,editNotes:[{...note,reason:'Editorial review returned incomplete sections.'}]}]]));
-  await assert.rejects(api.get(key),{status:404});
+  const unknown=await api.get(key);
+  assert.equal(unknown.actionRequired,'review');assert.equal(unknown.resumeReview,undefined);
 });
 
 test('only a locally resolved first-use spelling failure can reopen an older paused notation review',async t=>{
@@ -600,9 +601,51 @@ test('only a locally resolved first-use spelling failure can reopen an older pau
   await log.record({event:'failed',code:'editorial-rejected',stage:'revising-notation',boundCheckVersion:3,firstPart:1,lastPart:1,totalParts:1});
   const api=client(dir,()=>assert.fail('Checking a saved status invoked a worker'));
   proposal.notationEvidence=[clause.replace('{i}','j')];await save();
-  await assert.rejects(api.get(key),{status:404});
+  const unresolved=await api.get(key);
+  assert.equal(unresolved.actionRequired,'review');assert.equal(unresolved.resumeReview,undefined);
   proposal.notationEvidence=[clause.replace('{i}','i')];await save();
   assert.equal((await api.get(key)).resumeReview,key+'/1');
+});
+
+test('a v4 formatting checkpoint resumes only when the named field is repaired and the whole revision is clean',async t=>{
+  const dir=await temporaryCache(t),key=await require('./personalized-plan.cjs').readingPlanKey(request);
+  const history=require('./plan-checkpoints.cjs').planCheckpoints(dir,key,100000);
+  const log=require('./plan-diagnostics.cjs').planDiagnostics(dir,key);
+  const fixed='Choose one of the labels in \\(\\{1,2\\}\\).';
+  const damaged=fixed.replace('\\}\\)','\\)\\)');
+  const part={...draft(printed),title:request.analysis.parts[0].title,sourceSteps:[1],opening:fixed};
+  part.orientation.paragraphs=[fixed];
+  const proposal={...editorRow(part),paragraphs:[damaged]};
+  const reason='Editorial review returned unsupported formatting in paragraph 1. Use plain English prose and properly delimited LaTeX in that field.';
+  const save=(edit=proposal,why=reason,grounded=part,extra=[])=>history.save(new Map([[0,{grounded:[grounded],reviewed:[],
+    editNotes:[{id:part.id,reason:why,proposal:edit},...extra]}]]));
+  const failed={event:'failed',code:'editorial-rejected',stage:'revising-draft',boundCheckVersion:4,firstPart:1,lastPart:1,totalParts:1};
+  const api=client(dir,()=>assert.fail('a local formatting repair invoked a worker'));
+  await log.record(failed);
+  const ambiguous={...part,orientation:{...part.orientation,handoff:'The shorter expression \\(\\{1,2\\) also appears here.'}};
+  for(const [edit,why,grounded] of [
+    [{...proposal,paragraphs:[fixed]},reason,part],
+    [proposal,reason.replace('paragraph 1','introduction'),part],
+    [proposal,reason,ambiguous],
+    [{...proposal,paragraphs:[damaged,'Another **heading**.']},reason,part],
+    [{...proposal,notationEvidence:['A dangling delimiter \\)']},reason,part],
+    [{...proposal,definitionCorrections:[{name:'A label',text:'A **label**.',intuition:''}]},reason,part],
+  ]){
+    await save(edit,why,grounded);
+    const paused=await api.get(key);
+    assert.equal(paused.status,'error');assert.equal(paused.resumeReview,undefined);
+  }
+  await save(proposal,reason,part,[{id:part.id,reason:'An unrelated check failed.',proposal}]);
+  assert.equal((await api.get(key)).resumeReview,undefined);
+  await save();
+  await log.record({...failed,boundCheckVersion:5});
+  const current=await api.get(key);
+  assert.equal(current.actionRequired,'review');assert.equal(current.resumeReview,undefined);
+  await log.record(failed);
+  const offer=await api.get(key);assert.equal(offer.resumeReview,key+'/3');
+  const ready=await api.finished(await api.post({...request,resumeReview:offer.resumeReview}));
+  assert.equal(ready.status,'ready',ready.message);
+  assert.deepEqual(ready.parts[0].orientation.paragraphs,[fixed]);
 });
 
 test('finishing a verified section restores recovery capacity for a later independent failure',async t=>{
