@@ -40,15 +40,21 @@ function formulaComponents(raw) {
   }
   return result;
 }
+function equationContent(text) {
+  // An equation number and the sentence-ending full stop can be typeset
+  // inside the display. Neither is an operand or part of a decimal literal.
+  return text.trim().replace(/\\tag\*?\{\s*(?:[A-Za-z]\.)?\d+(?:\.\d+)*(?:[a-z])?\s*\}\s*\.?$/u,'')
+    .trimEnd().replace(/(?<=[\p{L}\p{N}\]})])\.$/u,'');
+}
 function formulaKey(raw) {
   // The same rendering normalization must run on the bare verifier field and
   // on the delimited transcription (e.g. \ge / ≥ and \left ... \right).
   const enclosed=/^(?:\\\(([\s\S]*)\\\)|\\\[([\s\S]*)\\\])$/u.exec(raw.trim());
-  return boundSignature(formulas('\\('+(enclosed?enclosed[1]??enclosed[2]:raw)+'\\)')[0]);
+  return boundSignature(equationContent(formulas('\\('+(enclosed?enclosed[1]??enclosed[2]:raw)+'\\)')[0]));
 }
 function hasCompleteFormula(text,raw) {
   const target=formulaKey(raw);
-  return formulas(text).some(formula=>formulaComponents(formula).has(target));
+  return formulas(text).some(formula=>formulaComponents(equationContent(formula)).has(target));
 }
 function matchingAnchors(unitText,transcription,anchor) {
   const source=createEvidenceIndex(unitText),witness=createEvidenceIndex(transcription);
@@ -58,6 +64,15 @@ function matchingAnchors(unitText,transcription,anchor) {
   if (!location) return null;
   const direct=witness.locate(phrase);
   if (direct) return {location,witness:direct};
+  // PDF text often prints a one-letter subscript on the same baseline.
+  // Match it only inside this already located prose anchor. Pad the
+  // replacement so that subsequent formula checks use the original offsets.
+  const flat=transcription.replace(/\\\(\s*([A-Za-z])_(?:([A-Za-z0-9])|\{([A-Za-z0-9]+)\})\s*\\\)/gu,
+    (span,base,sub,group)=>(base+(sub??group)).padEnd(span.length));
+  if (flat!==transcription) {
+    const located=createEvidenceIndex(flat).locate(phrase);
+    if (located) return {location,witness:located};
+  }
   // A figure/table caption can precede its transcription. Require another
   // unique, nearby shared label or multiword phrase to identify that location.
   const prose=transcription.replace(/\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\]/gu,'\n');

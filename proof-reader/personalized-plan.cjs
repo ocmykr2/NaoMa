@@ -1149,7 +1149,11 @@ async function verifyProposedBounds({part,proposal,finding,original,units,pageIm
       await remember();
       return false;
     }
-    const {verified,issues}=inspectPageBounds(decision,part.id,pending,sources);
+    // A correction may also repeat an earlier witness for context. Recheck
+    // that occurrence as part of this response, including any changed claim.
+    const repeatedIds=new Set(Array.isArray(decision?.verdicts)?decision.verdicts.map(v=>v?.occurrence):[]);
+    for (const id of repeatedIds) checked.delete(id);
+    const {verified,issues}=inspectPageBounds(decision,part.id,occurrences.filter(o=>!checked.has(o.occurrence)),sources);
     for (const v of verified) checked.set(v.occurrence,v);
     pending=occurrences.filter(o=>!checked.has(o.occurrence));
     if (!pending.length) {

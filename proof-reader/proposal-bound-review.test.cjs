@@ -19,6 +19,16 @@ test('visual transcriptions retain complete formula roles when read from a list 
   }
 });
 
+test('a transcript can include the printed equation number and sentence punctuation',()=>{
+  const display='\\[p=k+1.25.\\tag{2.4}\\]';
+  assert.ok(hasCompleteFormula(display,'p=k+1.25'));
+  assert.equal(hasCompleteFormula(display,'p=k+1.2'),false);
+  assert.equal(hasCompleteFormula(display,'2.4'),false);
+  assert.equal(hasCompleteFormula('\\[v=1...\\]','v=1'),false);
+  assert.ok(matchingAnchors('The margin Mk grows.','The margin \\(M_k\\) grows.','The margin Mk grows'));
+  assert.equal(matchingAnchors('The margin Mk grows.','The margin \\(M_j\\) grows.','The margin Mk grows'),null);
+});
+
 test('an adjacent caption must independently identify the same local passage or diagram',()=>{
   const text='Figure 3. Cross sections of the blue frame. Each cross section contains one color.';
   assert.ok(matchingAnchors(text,'Figure 3 shows the blue frame at its widest point.','Each cross section contains one color,'));
@@ -85,6 +95,7 @@ test('the independent PDF verifier binds every proposed occurrence to the assign
         return Buffer.from('Frame figure '+page);
       };
       const persistent=scenario==='persist decline';
+      let earlierVerdict;
       const successful=['printed','derived','network','changed context','seven pages','corrected citation','printed list entry'].includes(scenario);
       const worker=async({directory,schemaPath,outputPath,imagePaths,prompt})=>{
         let out;
@@ -148,6 +159,10 @@ test('the independent PDF verifier binds every proposed occurrence to the assign
           const first=out.verdicts[0];
           if (scenario==='contradicted before anchor') first.witnesses[0].transcription='The cubic row has \\(R^{3}\\) cells. '+anchor;
           if (scenario==='missing occurrence' || (scenario==='corrected citation' && audits===1)) out.verdicts.pop();
+          if (scenario==='corrected citation') {
+            if (audits===1) earlierVerdict=first;
+            else out.verdicts.push(earlierVerdict);
+          }
           if (scenario==='duplicate occurrence') out.verdicts[1]=first;
           if (scenario==='wrong expression') first.expression='R^{9}';
           if (scenario==='wrong step') first.witnesses[0].step=1;
