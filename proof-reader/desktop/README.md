@@ -18,6 +18,8 @@ Select a paper in the picker, click **Remove paper…**, and confirm its title. 
 
 Open **Diagnostics** on the waiting or failure screen. Click **Refresh** for the latest events, or **Copy diagnostics** to include the report in a bug report. Use the part number, page, field and check code to locate the problem. The report contains operational metadata and an opaque job key.
 
+When an edit changes a mathematical bound, Naoma compares the complete expression with the assigned source and requests a correction if the change lacks support. If the edit still fails, Naoma can independently review the original draft against a quoted passage. **verify-bound** marks that source check. **restore-grounded-draft** means the original draft passed review and preparation continued. Reopening an affected older plan lets the updated checker review the saved section.
+
 If a definition still lacks a verified source, the reader saves that part and continues reviewing independent parts. The progress report lists the parts with outstanding source checks and those waiting for a prerequisite. **Retry** resumes from the saved work. The complete plan opens after every part passes review.
 
 With the reader running, use that job key to read the same report from PowerShell. Adjust the port if you set `PROOF_READER_PORT`.

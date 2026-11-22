@@ -16,7 +16,7 @@ const enums = {
     'invalid-output','generation-failed','unexpected-failure','storage-error','timeout','login','quota','network','refused',
     'configuration','installation','exit','empty','prerequisite-pending']),
   action: new Set(['verify-page','repair-definition','find-defining-passage','revise-draft','revise-notation','review-section',
-    'split-batch','resume-checkpoint','retry-worker','retry-section','wait-for-prerequisite','save-result']),
+    'split-batch','resume-checkpoint','retry-worker','retry-section','wait-for-prerequisite','save-result','verify-bound','restore-grounded-draft']),
 };
 
 const schemaField = /^(?:orientation\.)?(?:definitions(?:\.[0-9]{1,3}(?:\.(?:name|text|intuition|sourceQuote|sourceStep|dependsOn))?)?|(?:notation|referenceNotation)(?:\.[0-9]{1,3}(?:\.(?:symbol|meaning))?)?|statement(?:\.(?:label|text|sourceQuote|sourceStep))?|paragraphs(?:\.[0-9]{1,3})?|sourceQuote|sourceStep|introduction|handoff|question|opening|orientation|parts)$/u;
@@ -49,7 +49,7 @@ function project(input) {
   }
   if (input.event==='failed') {
     Object.assign(out,dependencyCounts({...input,totalParts:out.totalParts}));
-    if (input.code==='editorial-rejected' && input.boundCheckVersion===2) out.boundCheckVersion=2;
+    if (input.code==='editorial-rejected' && integer(input.boundCheckVersion,2)) out.boundCheckVersion=input.boundCheckVersion;
   }
   return out;
 }

@@ -110,6 +110,63 @@ test('plan drafting and editorial review use the provider selected at submission
   assert.equal((await api.post()).status,'ready');
 });
 
+test('a repeated change of strict inequality recovers from inline PDF text only with the complete source expression',async t=>{
+  const printedLine='The calibration threshold satisfies ln 8 > 1 because eight exceeds Euler’s number.';
+  const longerLine='The stronger requirement ln 8 > 10 would need a different calibration.';
+  const body={title:'Calibrate a logarithmic scale',units:[{title:'Threshold',page:1,text:longerLine+' '+printedLine}],
+    analysis:{parts:[{id:'calibrate',title:'Compare the threshold',sourceSteps:[1],summary:'Compare the logarithm with one.'}],
+      localIntroductions:[],knowledge:{techniques:[],definitionGroups:[]}},readerKnowledge:{techniques:[],definitionGroups:[]}};
+  const sound=String.raw`The scale crosses its unit mark because \(\ln 8>1\).`;
+  const wrong=sound.replace('8>1','8=1');
+  const draftRow={id:'calibrate',question:'Why does the reading exceed one?',orientation:{
+    introduction:'The unit mark corresponds to Euler’s number on the original scale.',
+    paragraphs:[sound],notation:[],definitions:[],handoff:'',statement:null}};
+  const incomplete='The stronger requirement ln 8 > 1';
+  for(const citations of [[printedLine],[incomplete,printedLine],[incomplete,incomplete]]){
+    const dir=await temporaryCache(t);
+    let drafts=0,audits=0;
+    const worker=async({directory,schemaPath,outputPath,prompt})=>{
+      let row;
+      if(path.basename(outputPath)==='plan.json'){drafts++;row=draftRow;}
+      else {
+        assert.equal(path.basename(outputPath),'edited.json');
+        const schema=JSON.parse(await fs.readFile(schemaPath,'utf8'));
+        if(schema.properties.parts.items.required.includes('originalBound')){
+          audits++;
+          const {alternatives}=JSON.parse(prompt.split('Section and prior validation finding (data): ').at(-1).split('\n')[0]);
+          assert.equal(alternatives.length,1);
+          row={id:draftRow.id,supported:true,sourceStep:1,originalBound:alternatives[0],sourceQuote:citations[audits-1],
+            sourceCheck:'The original strict inequality follows by monotonicity of the natural logarithm.',
+            unresolved:'',formalAfter:0,notationEvidence:[]};
+        } else {
+          const {parts}=JSON.parse(await fs.readFile(path.join(directory,'editor-input.json'),'utf8'));
+          row={...editorRow(parts[0]),paragraphs:[wrong]};
+        }
+      }
+      await fs.writeFile(outputPath,JSON.stringify({parts:[row]}));
+    };
+    const api=client(dir,worker);
+    const job=await api.finished(await api.post(body));
+    assert.equal(drafts,1);
+    assert.equal(audits,citations.length,'retry only a malformed supporting citation');
+    if(citations.at(-1)===printedLine){
+      assert.equal(job.status,'ready',job.message);
+      assert.deepEqual(job.parts[0].orientation.paragraphs,[sound]);
+      const cold=client(dir,()=>assert.fail('reopening used a worker'));
+      const reopened=await cold.get(job.key);
+      assert.deepEqual(reopened.parts,job.parts);
+      const trace=await cold.diagnostics(job.key);
+      const actions=trace.events.map(event=>event.action).filter(Boolean);
+      assert.ok(actions.includes('verify-bound'));
+      assert.ok(actions.indexOf('restore-grounded-draft')>actions.indexOf('verify-bound'));
+      for(const content of ['calibration threshold','unit mark','8>1','8=1']) assert.ok(!JSON.stringify(trace).includes(content));
+    }else{
+      assert.equal(job.status,'error','a prefix of 10 cannot attest a bound of 1');
+      assert.equal(job.parts,undefined);
+    }
+  }
+});
+
 test('a definition source rejection is diagnosable after restart and a successful retry retains its history',async t => {
   const dir = await temporaryCache(t);
   const entered = Promise.withResolvers(), release = Promise.withResolvers();
@@ -442,7 +499,7 @@ test('older unpublished checkpoints expose counts without exposing manuscript co
   assert.equal(JSON.stringify(report).includes('private'),false);
 });
 
-test('only an old failed subtraction review with its saved candidate offers a conditional resumption',async t=>{
+test('an older rejected bound with a saved candidate can resume once under the new source check',async t=>{
   const dir=await temporaryCache(t);
   const {planCheckpoints}=require('./plan-checkpoints.cjs');
   const {planDiagnostics}=require('./plan-diagnostics.cjs');
@@ -451,7 +508,7 @@ test('only an old failed subtraction review with its saved candidate offers a co
   const log=planDiagnostics(dir,key);
   const failed={event:'failed',code:'editorial-rejected',stage:'revising-draft',firstPart:1,lastPart:1,totalParts:1};
   const proposed={...draft(printed),title:request.analysis.parts[0].title,sourceSteps:[1],opening:section},partId=proposed.id;
-  const reason='Editorial review changed a mathematical bound without a matching source expression (j=n-1). Restore the grounded expression or its source-supported derivation.';
+  const reason='Editorial review changed a mathematical bound without a matching source expression (h=\\logN). Restore the grounded expression or its source-supported derivation.';
   const rows=new Map([[0,{grounded:[proposed],reviewed:[],editNotes:[{id:partId,reason,proposal:editorRow(proposed)}]}]]);
   const api=client(dir,()=>assert.fail('a read-only check or stale submission started generation'));
   await log.record(failed);
@@ -459,11 +516,14 @@ test('only an old failed subtraction review with its saved candidate offers a co
   await history.save(rows);
   const offer=await api.get(key);
   assert.equal(offer.actionRequired,'review');assert.equal(offer.resumeReview,key+'/1');
-  assert.ok(!JSON.stringify(offer).includes('j=n-1'));
+  assert.ok(!JSON.stringify(offer).includes('logN'));
   await log.record({...failed,code:'quota'});
   await assert.rejects(api.get(key),{status:404});
   await log.record({...failed,boundCheckVersion:2});
-  await assert.rejects(api.get(key),{status:404});
+  assert.equal((await api.get(key)).actionRequired,'review');
+  await log.record({...failed,boundCheckVersion:3});
+  const exhausted=await api.get(key);
+  assert.equal(exhausted.status,'error');assert.equal(exhausted.resumeReview,undefined);
   const stale=await api.post({...request,resumeReview:offer.resumeReview});
   assert.equal(stale.status,'error');assert.equal(stale.resumeReview,undefined);
   await log.record(failed);
@@ -478,4 +538,57 @@ test('only an old failed subtraction review with its saved candidate offers a co
   assert.equal(ready.status,'ready',ready.message);assert.equal(ready.key,key);
   assert.equal((await fixed.post({...request,resumeReview:available.resumeReview})).status,'ready');
   assert.equal((await fixed.diagnostics(key)).events.filter(e=>e.event==='resumed').length,1);
+});
+
+test('recovery locates a rejected part inside its saved batch and leaves accepted siblings alone',async t=>{
+  const dir=await temporaryCache(t),key='b'.repeat(64);
+  const {planCheckpoints}=require('./plan-checkpoints.cjs');
+  const {planDiagnostics}=require('./plan-diagnostics.cjs');
+  const history=planCheckpoints(dir,key,100000),log=planDiagnostics(dir,key);
+  const api=client(dir,()=>assert.fail('checking the saved status invoked a worker'));
+  const earlier={id:'first'}, rejected={id:'second'};
+  const note={id:rejected.id,proposal:{id:rejected.id},reason:
+    'Editorial review changed a mathematical bound without a matching source expression (d=2). Restore the grounded expression or its source-supported derivation.'};
+  const row={grounded:[earlier,rejected],reviewed:[earlier],editNotes:[note]};
+  await history.save(new Map([[3,row]]));
+  const failed={event:'failed',code:'editorial-rejected',stage:'revising-draft',boundCheckVersion:2,firstPart:5,lastPart:5,totalParts:8};
+  await log.record(failed);
+  assert.equal((await api.get(key)).resumeReview,key+'/1');
+  await log.record({...failed,firstPart:4,lastPart:4});
+  await assert.rejects(api.get(key),{status:404});
+  await log.record(failed);
+  await history.save(new Map([[3,{...row,editNotes:[{...note,reason:'Editorial review returned incomplete sections.'}]}]]));
+  await assert.rejects(api.get(key),{status:404});
+});
+
+test('finishing a verified section restores recovery capacity for a later independent failure',async t=>{
+  const dir=await temporaryCache(t),body=structuredClone(request);
+  body.analysis.parts.push({...body.analysis.parts[0],id:'second'});
+  const {readingPlanKey}=require('./personalized-plan.cjs');
+  const {planCheckpoints}=require('./plan-checkpoints.cjs');
+  const key=await readingPlanKey(body);
+  // Resume one attempt below the consecutive limit for a two-part plan.
+  await planCheckpoints(dir,key,100000).save(new Map([
+    ['draft-width',1],['recovery-state',{attempts:8,consecutiveAttempts:8,tried:[],networkProbes:[]}],
+  ]));
+  const calls=new Map();
+  const api=client(dir,async({directory,outputPath})=>{
+    let parts;
+    if(path.basename(outputPath)==='plan.json') {
+      const assigned=JSON.parse(await fs.readFile(path.join(directory,'batch.json'),'utf8')).parts;
+      assert.equal(assigned.length,1);
+      const {id}=assigned[0],count=calls.get(id) || 0;
+      calls.set(id,count+1);
+      parts=count?[{...draft(printed),id}]:[];
+    } else {
+      assert.equal(path.basename(outputPath),'edited.json');
+      const assigned=JSON.parse(await fs.readFile(path.join(directory,'editor-input.json'),'utf8')).parts;
+      parts=assigned.map(editorRow);
+    }
+    await fs.writeFile(outputPath,JSON.stringify({parts}));
+  });
+  const ready=await api.finished(await api.post(body));
+  assert.equal(ready.status,'ready',ready.message);
+  assert.deepEqual(ready.parts.map(p=>p.id),['pairing','second']);
+  assert.deepEqual([...calls],[['pairing',2],['second',2]]);
 });
