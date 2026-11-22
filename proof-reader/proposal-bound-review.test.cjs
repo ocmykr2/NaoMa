@@ -70,14 +70,19 @@ async function run(body,cacheDir,worker,renderSourcePage) {
 }
 
 test('the independent PDF verifier binds every proposed occurrence to the assigned page before another rewrite',async t=>{
+  const components=['component approved','component derived','component missing derivation','component wrong occurrence',
+    'component wrong passage','component wrong page','component contradicted','component insufficient','component missing occurrence',
+    'component cold receipt','component malformed then restart'];
   for (const scenario of ['printed','derived','missing occurrence','duplicate occurrence','wrong expression','wrong step',
     'wrong page','detached anchor','missing premise','ambiguous anchor','declined','malformed','network','unexpected',
     'persist decline','changed context','incomplete notation','unavailable image','seven pages','corrected citation',
-    'contradicted after anchor','contradicted before anchor','printed list entry','curated commentary']) {
+    'contradicted after anchor','contradicted before anchor','printed list entry','curated commentary','different exponent in aggregate',...components]) {
     await t.test(scenario,async t=>{
       const cacheDir=await fs.mkdtemp(path.join(os.tmpdir(),'reader-page-equations-'));
       t.after(()=>fs.rm(cacheDir,{recursive:true,force:true}));
       const body=structuredClone(paper);
+      const component=components.includes(scenario);
+      if (component) body.units[1].text=anchor+' The inventory consists of the reserve plus the cubic frame, with total N+R 3.';
       if (scenario==='ambiguous anchor') body.units[1].text+=' '+anchor;
       if (scenario==='contradicted after anchor') body.units[1].text=anchor+' The cubic row has \\(R^{7}\\) cells.';
       if (scenario==='contradicted before anchor') body.units[1].text='The cubic row has \\(R^{7}\\) cells. '+anchor;
@@ -89,14 +94,15 @@ test('the independent PDF verifier binds every proposed occurrence to the assign
         body.analysis.parts[0].sourceSteps=[1,2,3,4,5,6,7];
       }
       const key=await readingPlanKey(body),checkpoints=planCheckpoints(cacheDir,key,100000);
-      let drafts=0,edits=0,audits=0;
+      let drafts=0,edits=0,audits=0,componentCalls=0,afterReceipt,restarted=false;
       const render=async(_pdf,page)=>{
         if (scenario==='unavailable image') throw new Error('Page unavailable.');
         return Buffer.from('Frame figure '+page);
       };
       const persistent=scenario==='persist decline';
       let earlierVerdict;
-      const successful=['printed','derived','network','changed context','seven pages','corrected citation','printed list entry'].includes(scenario);
+      const successful=['printed','derived','network','changed context','seven pages','corrected citation','printed list entry',
+        'component approved','component derived'].includes(scenario);
       const worker=async({directory,schemaPath,outputPath,imagePaths,prompt})=>{
         let out;
         switch (path.basename(outputPath)) {
@@ -113,13 +119,14 @@ test('the independent PDF verifier binds every proposed occurrence to the assign
           if (edits>1) {
             const [note]=JSON.parse(await fs.readFile(path.join(directory,'editor-revisions.json'),'utf8'));
             assert.ok(!Object.hasOwn(note,'proposalPageAudits'));
+            if (scenario==='component cold receipt' && !afterReceipt) afterReceipt=await checkpoints.load();
             if (scenario==='declined' || scenario==='changed context') assert.match(note.proposedBoundIssue,/binding is unclear/u);
           }
-          let proposed=edits===1 || persistent || scenario==='changed context'?paragraphs:[draft];
+          let proposed=edits===1 || persistent || scenario==='changed context' || scenario==='component malformed then restart'?paragraphs:[draft];
           if (scenario==='changed context' && edits>1) proposed=[paragraphs[0]+' This counts the full cube.',paragraphs[1]];
           out={parts:[{id:'cube',introduction:base,paragraphs:proposed,handoff:'',formalAfter:0,
             referenceNotation:null,definitionCorrections:[],proseNotationCards:[],
-            notationEvidence:scenario==='incomplete notation' && edits===1?[]:[base],
+            notationEvidence:['incomplete notation','component cold receipt'].includes(scenario) && edits===1?[]:[base],
             sourceCheck:'Compared the frame dimensions with the count on its source page.',unresolved:''}]};
           break;
         }
@@ -149,9 +156,12 @@ test('the independent PDF verifier binds every proposed occurrence to the assign
           if (scenario==='malformed') {await fs.writeFile(outputPath,'invalid');return;}
           const derived=scenario==='derived' || scenario==='missing premise';
           out={sectionId:'cube',supported:true,unresolved:'',verdicts:occurrences.map(o=>{
-            const formula=derived?'R^{2}R':scenario==='printed list entry'?'(R,R^{2},R^{3})':'R^{3}';
+            const formula=component?'N+R^{3}':scenario==='different exponent in aggregate'?'N+R^{30}':
+              derived?'R^{2}R':scenario==='printed list entry'?'(R,R^{2},R^{3})':'R^{3}';
+            const transcription=component?anchor+' The inventory consists of the reserve plus the cubic frame, with total \\('+formula+'\\).':
+              anchor+' The cubic row has \\('+formula+'\\) cells.';
             return {occurrence:o.occurrence,expression:o.expression,mode:derived?'derived':'printed',
-              witnesses:[{step:sourceSteps.at(-1).step,page:5,anchor,transcription:anchor+' The cubic row has \\('+formula+'\\) cells.',sourceFormula:formula}],
+              witnesses:[{step:sourceSteps.at(-1).step,page:5,anchor,transcription,sourceFormula:formula}],
               binding:'The row counts all cells in the same cubic frame.',
               applicability:'Each axis of the cubic frame has the same side length.',
               derivation:derived?'The layer product \\(R^{2}R\\) has three factors, giving \\(R^{3}\\).':''};
@@ -174,6 +184,44 @@ test('the independent PDF verifier binds every proposed occurrence to the assign
           }
           break;
         }
+        case 'proposal-component-review.json': {
+          componentCalls++;
+          assert.ok(component);
+          assert.equal(audits,2);
+          assert.equal(await fs.readFile(imagePaths.at(-1),'utf8'),'Frame figure 5');
+          const {sectionId,questions}=JSON.parse(prompt.split('Immutable component questions: ')[1]);
+          assert.equal(sectionId,'cube');
+          assert.equal(questions.length,2);
+          assert.equal(new Set(questions.map(q=>q.occurrence)).size,2);
+          if (scenario==='component malformed then restart' && !restarted) {
+            await fs.writeFile(outputPath,'{"sectionId":');return;
+          }
+          const judgments=questions.map(q=>{
+            assert.equal(q.expression,'R^{3}');
+            assert.ok(paragraphs.includes(q.context));
+            const passage=q.passages.find(p=>p.step===2 && p.page===5);
+            assert.ok(passage);assert.ok(passage.excerpt.includes(anchor));
+            return {occurrence:q.occurrence,passages:[{id:passage.id,step:passage.step,page:passage.page}],role:'component',
+              position:'The second additive term in the total inventory counts the cubic frame.',
+              binding:'The cubic frame contributes exactly the cells represented by the second term.',
+              applicability:'The reserve is counted separately and each axis of the frame has the stated edge length.',
+              derivation:''};
+          });
+          if (scenario==='component wrong occurrence') judgments[0].occurrence='a different occurrence';
+          if (scenario==='component wrong passage') judgments[0].passages[0].id='a different source passage';
+          if (scenario==='component wrong page') judgments[0].passages[0].page=4;
+          if (scenario==='component missing occurrence') judgments.pop();
+          if (scenario==='component derived' || scenario==='component missing derivation') {
+            for (const judgment of judgments) {
+              judgment.role='derived';
+              if (scenario==='component derived') judgment.derivation='Subtract the separate reserve from the printed total, leaving the second summand as the frame count.';
+            }
+          }
+          const status=scenario==='component contradicted'?'contradicted':scenario==='component insufficient'?'insufficient':'verified';
+          out={sectionId,status,reason:status==='verified'?'The second term counts the cells of the cubic frame in both uses.':
+            'The diagram does not establish the claimed cell count.',judgments};
+          break;
+        }
         default:assert.fail('Unexpected worker task '+path.basename(outputPath));
         }
         await fs.writeFile(outputPath,JSON.stringify(out));
@@ -187,8 +235,23 @@ test('the independent PDF verifier binds every proposed occurrence to the assign
       }
       const repaired=['network','changed context','missing occurrence','duplicate occurrence','wrong expression','wrong step',
         'wrong page','detached anchor','missing premise','ambiguous anchor','malformed','corrected citation',
-        'contradicted after anchor','contradicted before anchor','curated commentary'].includes(scenario);
-      assert.equal(audits,scenario==='unavailable image'?0:repaired?2:1,result.message);
+        'contradicted after anchor','contradicted before anchor','curated commentary','different exponent in aggregate'].includes(scenario);
+      assert.equal(audits,scenario==='unavailable image'?0:repaired||component?2:1,result.message);
+      assert.equal(componentCalls,component?1:0);
+      if (scenario==='component malformed then restart') {
+        assert.equal(result.status,'error',result.message);
+        assert.ok(edits>=2,'the same candidate was submitted again within the first preparation');
+        const [receipt]=(await checkpoints.load()).get(0).editNotes[0].proposalPageAudits;
+        assert.equal(receipt.componentPending,true);
+        assert.ok(!receipt.componentDecision);
+        const beforeEdits=edits;
+        restarted=true;
+        const cold=await run(body,cacheDir,worker,render);
+        assert.equal(cold.status,'ready',cold.message);
+        assert.deepEqual(cold.parts[0].orientation.paragraphs,paragraphs);
+        assert.equal(drafts,1);assert.equal(edits,beforeEdits);assert.equal(audits,2);assert.equal(componentCalls,2);
+        return;
+      }
       if (persistent) {
         assert.equal(result.status,'error',result.message);
         assert.equal((await checkpoints.load()).get(0).editNotes[0].proposalPageAudits.length,1);
@@ -200,6 +263,17 @@ test('the independent PDF verifier binds every proposed occurrence to the assign
         assert.equal(edits,successful && scenario!=='changed context'?1:2);
         if (scenario==='changed context') assert.match(result.parts[0].orientation.paragraphs[0],/full cube/u);
         else assert.deepEqual(result.parts[0].orientation.paragraphs,successful?paragraphs:[draft]);
+        if (scenario==='component cold receipt') {
+          // Resume the saved good math receipt while the separate notation issue is still outstanding.
+          const coldDir=await fs.mkdtemp(path.join(os.tmpdir(),'reader-cold-equation-'));
+          t.after(()=>fs.rm(coldDir,{recursive:true,force:true}));
+          assert.ok(afterReceipt.get(0).editNotes[0].proposalPageAudits.length);
+          await planCheckpoints(coldDir,key,100000).save(afterReceipt);
+          const cold=await run(body,coldDir,worker,render);
+          assert.equal(cold.status,'ready',cold.message);
+          assert.deepEqual(cold.parts[0].orientation.paragraphs,[draft]);
+          assert.equal(drafts,1);assert.equal(audits,2);assert.equal(componentCalls,1);
+        }
       }
     });
   }
