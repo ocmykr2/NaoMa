@@ -1295,7 +1295,7 @@
   function attachProviderPicker() {
     const trigger = el("chooseProvider"), dialog = el("providerDialog"), choice = el("providerChoice");
     const save = el("saveProvider"), retry = el("retryProvider"), status = el("providerStatus");
-    const names = {codex:"Codex", claude:"Claude"};
+    const names = {codex:"Codex", claude:"Claude Opus"};
     let saved = "", busy = false;
     window.getConfirmedModelProvider = () => busy ? "" : saved;
 

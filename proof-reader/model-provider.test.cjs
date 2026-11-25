@@ -7,11 +7,13 @@ const {spawn} = require('node:child_process');
 const {once} = require('node:events');
 const {createProviderSettings} = require('./model-provider.cjs');
 
-test('a saved provider survives restart and a damaged setting needs an explicit selection', async t => {
+test('Claude is the default and an explicit provider choice survives restart', async t => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'naoma-provider-'));
   t.after(() => fs.rm(dir, {recursive:true, force:true}));
   const settings = createProviderSettings(dir);
-  assert.equal(await settings.get(), 'codex');
+  assert.equal(await settings.get(), 'claude');
+  await settings.set('codex');
+  assert.equal(await createProviderSettings(dir).get(), 'codex');
   await settings.set('claude');
   assert.equal(await createProviderSettings(dir).get(), 'claude');
   await assert.rejects(settings.set('other'), {status:400});
@@ -39,7 +41,8 @@ test('the local provider API accepts only local, explicit provider choices', {ti
   const put = (provider, extraHeaders) => fetch(url, {
     method:'PUT', headers:{'content-type':'application/json', ...extraHeaders}, body:JSON.stringify({provider}),
   });
-  assert.deepEqual(await (await fetch(url)).json(), {provider:'codex'});
+  assert.deepEqual(await (await fetch(url)).json(), {provider:'claude'});
+  assert.deepEqual(await (await put('codex')).json(), {provider:'codex'});
   assert.deepEqual(await (await put('claude')).json(), {provider:'claude'});
   assert.equal((await put('codex', {origin:'https://example.org'})).status, 403);
   assert.equal((await put('unknown')).status, 400);

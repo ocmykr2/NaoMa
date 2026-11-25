@@ -6,7 +6,7 @@ The window uses the installed Microsoft Edge WebView2 Evergreen Runtime. Reading
 
 If the window’s own service exits while you are reading, the window restarts it on the same port and reconnects the open page. Two automatic restarts are available in a ten-minute interval. If the service keeps exiting or another installation claims the port, the window displays the exit code and the reason recovery stopped.
 
-Imported PDFs use Poppler. Choose **AI provider** in Naoma to use Codex or Claude for paper preparation and tutor answers. For Codex, the desktop host can locate the Windows Codex app’s CLI from its installation record. For Claude, install the latest Claude Code (2.1.248 or newer) and run `claude auth login` before starting a paper. Naoma requests the Opus model alias through that CLI. [Claude Code setup](https://code.claude.com/docs/en/setup) · [Claude model aliases](https://code.claude.com/docs/en/model-config)
+Imported PDFs use Poppler. Naoma uses Claude Opus by default for paper preparation and tutor answers. Install Claude Code (2.1.248 or newer) and run `claude auth login` before starting a paper. To use Codex, choose **AI provider → Codex**. The desktop host can locate the Windows Codex app’s CLI from its installation record. [Claude Code setup](https://code.claude.com/docs/en/setup) · [Claude model aliases](https://code.claude.com/docs/en/model-config)
 
 The desktop reading profile is stored in `%LOCALAPPDATA%\ProofReader\DesktopProfile`. Its knowledge, library, and other persistent site data belong to this app profile. Browser profiles are separate. Changing the service port changes the origin used by WebView2 storage.
 

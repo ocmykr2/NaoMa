@@ -206,7 +206,7 @@ function libraryFixture(records = new Map()) {
   return {...window.PAPER_LIBRARY,indexedDB};
 }
 
-function createApp({local = storage(),library = libraryFixture(),search = '',post = [],poll = [],plans = [],diagnostics = [],structures = [],answers = [],removals = [],extractedPages = pages,modelSettings = {provider:'codex'},versionResponse} = {}) {
+function createApp({local = storage(),library = libraryFixture(),search = '',post = [],poll = [],plans = [],diagnostics = [],structures = [],answers = [],removals = [],extractedPages = pages,modelSettings = {provider:'claude'},versionResponse} = {}) {
   const document = documentFixture(), window = new EventTarget();
   const location = new URL('http://fixture.invalid/'+search);
   const calls = [], titles = [];
@@ -287,34 +287,27 @@ const importedChoice = 'doc-'+hash;
 const fullPosts = app => app.calls.filter(c => c.url === '/api/techniques' && c.method === 'POST');
 const quickCalls = app => app.calls.filter(c => c.url.startsWith('/api/paper-question'));
 
-test('select Claude before importing, retain the choice on reopening, and switch back while reading',async()=>{
-  const modelSettings={provider:'codex'}, app=createApp({modelSettings});
-  await until(()=>app.el('activeProvider').textContent==='Codex','saved provider was not loaded');
-  app.fire('chooseProvider','click');
-  await until(()=>!app.el('providerChoice').disabled,'provider options did not open');
-  app.el('providerChoice').value='claude';
-  app.fire('providerChoice','change');
+test('import with the default Claude Opus provider and remember an explicit Codex selection',async()=>{
+  const modelSettings={provider:'claude'}, app=createApp({modelSettings,post:[ready],plans:[personalized]});
+  await until(()=>app.el('activeProvider').textContent==='Claude Opus','default provider was not displayed');
+  assert.match(app.el('researchConsentLabel').textContent,/Use Claude Opus/);
   assert.match(app.el('providerSetup').textContent,/latest Opus/);
+  await openPdf(app);
+  assert.equal(fullPosts(app)[0].headers['X-Naoma-Provider'],'claude');
+  await checkPublished(app);
+  app.fire('continuePreflight','click');
+  await until(()=>app.el('overviewPanel').hidden===false,'reading view did not open');
+  assert.equal(app.calls.find(c=>c.url==='/api/reading-plan' && c.method==='POST').headers['X-Naoma-Provider'],'claude');
+  app.fire('chooseProvider','click');
+  await until(()=>!app.el('providerChoice').disabled,'provider control missing during reading');
+  app.el('providerChoice').value='codex';
+  app.fire('providerChoice','change');
   app.fire('saveProvider','click');
-  await until(()=>!app.el('providerDialog').open,'successful save did not dismiss settings');
-  assert.equal(modelSettings.provider,'claude');
-  app.fire('openImport','click');
-  assert.match(app.el('researchConsentLabel').textContent,/Use Claude/);
-  const reopened=createApp({modelSettings,post:[ready],plans:[personalized]});
-  await until(()=>reopened.el('activeProvider').textContent==='Claude','reopening forgot the provider');
-  await openPdf(reopened);
-  assert.equal(fullPosts(reopened)[0].headers['X-Naoma-Provider'],'claude');
-  await checkPublished(reopened);
-  reopened.fire('continuePreflight','click');
-  await until(()=>reopened.el('overviewPanel').hidden===false,'reading view did not open');
-  assert.equal(reopened.calls.find(c=>c.url==='/api/reading-plan' && c.method==='POST').headers['X-Naoma-Provider'],'claude');
-  reopened.fire('chooseProvider','click');
-  await until(()=>!reopened.el('providerChoice').disabled,'provider control missing during reading');
-  reopened.el('providerChoice').value='codex';
-  reopened.fire('providerChoice','change');
-  reopened.fire('saveProvider','click');
-  await until(()=>reopened.el('activeProvider').textContent==='Codex','switching back failed');
-  assert.equal(reopened.el('overviewPanel').hidden,false);
+  await until(()=>app.el('activeProvider').textContent==='Codex','switching to Codex failed');
+  assert.equal(app.el('overviewPanel').hidden,false);
+  const reopened=createApp({modelSettings});
+  await until(()=>reopened.el('activeProvider').textContent==='Codex','reopening forgot the saved provider');
+  assert.match(reopened.el('researchConsentLabel').textContent,/Use Codex/);
 });
 
 test('unknown server settings allow local reading but block sending a paper until a provider is confirmed',async()=>{

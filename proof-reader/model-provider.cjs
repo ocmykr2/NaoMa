@@ -22,7 +22,7 @@ function createProviderSettings(directory = preferencesDirectory()) {
         const settings = JSON.parse(await fs.readFile(file, 'utf8'));
         if (validProvider(settings?.provider)) return settings.provider;
       } catch (error) {
-        if (error.code === 'ENOENT') return 'codex';
+        if (error.code === 'ENOENT') return 'claude';
       }
       throw Object.assign(new Error('Choose your AI provider again to restore the saved setting.'), {status: 503});
     },
